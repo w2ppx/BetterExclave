@@ -90,6 +90,7 @@ object Key {
     const val PROBE_INTERVAL = "probeInterval"
 
     const val ROUTE_MODE = "routeMode"
+    const val PROFILE_ROUTING_RULES = "profileRoutingRules"
 
     const val RULES_PROVIDER = "rulesProvider"
     const val RULES_GEOSITE_URL = "rulesGeositeUrl"

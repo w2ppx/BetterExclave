@@ -40,6 +40,12 @@
     <string name="group_changed">Updated: \n%s</string>
     <string name="group_deleted">Deleted: \n%s</string>
     <string name="group_duplicate">Duplicate: \n%s</string>
+    <string name="profile_routing_rules">Profile routing rules</string>
+    <string name="profile_routing_rules_sum">Use routing rules from the connected JSON profile</string>
+    <plurals name="profile_routing_rules_count">
+        <item quantity="one">%d rule from connected profile</item>
+        <item quantity="other">%d rules from connected profile</item>
+    </plurals>
     <!-- misc -->
     <string name="service_mode">Service mode</string>
     <string name="service_mode_proxy">Proxy only</string>

@@ -38,8 +38,10 @@ import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import io.nekohasekai.sagernet.R
 import io.nekohasekai.sagernet.SagerNet
+import io.nekohasekai.sagernet.aidl.TrafficStats
 import io.nekohasekai.sagernet.database.DataStore
 import io.nekohasekai.sagernet.database.ProfileManager
+import io.nekohasekai.sagernet.database.ProxyEntity
 import io.nekohasekai.sagernet.database.RuleEntity
 import io.nekohasekai.sagernet.database.SagerDatabase
 import io.nekohasekai.sagernet.databinding.LayoutEmptyRouteBinding
@@ -76,7 +78,8 @@ class RouteFragment : ToolbarFragment(R.layout.layout_route), Toolbar.OnMenuItem
         }
 
         ruleAdapter = RuleAdapter()
-        ProfileManager.addListener(ruleAdapter)
+        ProfileManager.addListener(ruleAdapter as ProfileManager.RuleListener)
+        ProfileManager.addListener(ruleAdapter as ProfileManager.Listener)
         ruleListView.adapter = ruleAdapter
         undoManager = UndoSnackbarManager(requireActivity() as ThemedActivity, ruleAdapter)
 
@@ -85,7 +88,7 @@ class RouteFragment : ToolbarFragment(R.layout.layout_route), Toolbar.OnMenuItem
             override fun getSwipeDirs(
                 recyclerView: RecyclerView,
                 viewHolder: RecyclerView.ViewHolder,
-            ) = if (viewHolder is RuleAdapter.DocumentHolder) {
+            ) = if (viewHolder !is RuleAdapter.RuleHolder) {
                 0
             } else {
                 super.getSwipeDirs(recyclerView, viewHolder)
@@ -94,7 +97,7 @@ class RouteFragment : ToolbarFragment(R.layout.layout_route), Toolbar.OnMenuItem
             override fun getDragDirs(
                 recyclerView: RecyclerView,
                 viewHolder: RecyclerView.ViewHolder,
-            ) = if (viewHolder is RuleAdapter.DocumentHolder) {
+            ) = if (viewHolder !is RuleAdapter.RuleHolder) {
                 0
             } else {
                 super.getDragDirs(recyclerView, viewHolder)
@@ -110,7 +113,7 @@ class RouteFragment : ToolbarFragment(R.layout.layout_route), Toolbar.OnMenuItem
                 recyclerView: RecyclerView,
                 viewHolder: RecyclerView.ViewHolder, target: RecyclerView.ViewHolder,
             ): Boolean {
-                return if (target is RuleAdapter.DocumentHolder) {
+                return if (viewHolder !is RuleAdapter.RuleHolder || target !is RuleAdapter.RuleHolder) {
                     false
                 } else {
                     ruleAdapter.move(viewHolder.adapterPosition, target.adapterPosition)
@@ -132,9 +135,19 @@ class RouteFragment : ToolbarFragment(R.layout.layout_route), Toolbar.OnMenuItem
 
     override fun onDestroy() {
         if (::ruleAdapter.isInitialized) {
-            ProfileManager.removeListener(ruleAdapter)
+            ProfileManager.removeListener(ruleAdapter as ProfileManager.RuleListener)
+            ProfileManager.removeListener(ruleAdapter as ProfileManager.Listener)
         }
         super.onDestroy()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::ruleAdapter.isInitialized) {
+            runOnDefaultDispatcher {
+                ruleAdapter.reload()
+            }
+        }
     }
 
     @SuppressLint("CheckResult")
@@ -344,14 +357,34 @@ class RouteFragment : ToolbarFragment(R.layout.layout_route), Toolbar.OnMenuItem
         return true
     }
 
-    inner class RuleAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>(), ProfileManager.RuleListener, UndoSnackbarManager.Interface<RuleEntity> {
+    inner class RuleAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>(), ProfileManager.RuleListener, ProfileManager.Listener, UndoSnackbarManager.Interface<RuleEntity> {
 
         val ruleList = ArrayList<RuleEntity>()
+        private var profileRoutingName = ""
+        private var profileRoutingSummary = ""
+        private val hasProfileRouting get() = profileRoutingName.isNotEmpty()
+        private val ruleOffset get() = 1 + if (hasProfileRouting) 1 else 0
+
+        private fun connectedProfileRouting(): Pair<String, String>? {
+            if (!SagerNet.started || DataStore.startedProfile <= 0L) return null
+            val profile = ProfileManager.getProfile(DataStore.startedProfile) ?: return null
+            val routingRules = profile.requireBean().profileRoutingRules
+            if (routingRules.isEmpty()) return null
+            val count = runCatching { parseJson(routingRules).asJsonArray.size() }.getOrDefault(0)
+            if (count <= 0) return null
+            return profile.displayName() to resources.getQuantityString(
+                R.plurals.profile_routing_rules_count, count, count
+            )
+        }
+
         suspend fun reload() {
             val rules = ProfileManager.getRules()
+            val profileRouting = connectedProfileRouting()
             ruleListView.post {
                 ruleList.clear()
                 ruleList.addAll(rules)
+                profileRoutingName = profileRouting?.first.orEmpty()
+                profileRoutingSummary = profileRouting?.second.orEmpty()
                 ruleAdapter.notifyDataSetChanged()
             }
         }
@@ -366,40 +399,45 @@ class RouteFragment : ToolbarFragment(R.layout.layout_route), Toolbar.OnMenuItem
             parent: ViewGroup,
             viewType: Int,
         ): RecyclerView.ViewHolder {
-            return if (viewType == 0) {
-                DocumentHolder(LayoutEmptyRouteBinding.inflate(layoutInflater, parent, false))
-            } else {
-                RuleHolder(LayoutRouteItemBinding.inflate(layoutInflater, parent, false))
+            return when (viewType) {
+                0 -> DocumentHolder(LayoutEmptyRouteBinding.inflate(layoutInflater, parent, false))
+                1 -> ProfileRoutingHolder(LayoutRouteItemBinding.inflate(layoutInflater, parent, false))
+                else -> RuleHolder(LayoutRouteItemBinding.inflate(layoutInflater, parent, false))
             }
         }
 
         override fun getItemViewType(position: Int): Int {
             if (position == 0) return 0
-            return 1
+            if (hasProfileRouting && position == 1) return 1
+            return 2
         }
 
         override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
             if (holder is DocumentHolder) {
                 holder.bind()
+            } else if (holder is ProfileRoutingHolder) {
+                holder.bind()
             } else if (holder is RuleHolder) {
-                holder.bind(ruleList[position - 1])
+                holder.bind(ruleList[position - ruleOffset])
             }
         }
 
         override fun getItemCount(): Int {
-            return ruleList.size + 1
+            return ruleList.size + ruleOffset
         }
 
         override fun getItemId(position: Int): Long {
             if (position == 0) return 0L
-            return ruleList[position - 1].id
+            if (hasProfileRouting && position == 1) return -1L
+            return ruleList[position - ruleOffset].id
         }
 
         private val updated = HashSet<RuleEntity>()
         fun move(from: Int, to: Int) {
-            val first = ruleList[from - 1]
+            val offset = ruleOffset
+            val first = ruleList[from - offset]
             var previousOrder = first.userOrder
-            val (step, range) = if (from < to) Pair(1, from - 1 until to - 1) else Pair(-1, to downTo from - 1)
+            val (step, range) = if (from < to) Pair(1, from - offset until to - offset) else Pair(-1, to - offset downTo from - offset)
             for (i in range) {
                 val next = ruleList[i + step]
                 val order = next.userOrder
@@ -409,7 +447,7 @@ class RouteFragment : ToolbarFragment(R.layout.layout_route), Toolbar.OnMenuItem
                 updated.add(next)
             }
             first.userOrder = previousOrder
-            ruleList[to - 1] = first
+            ruleList[to - offset] = first
             updated.add(first)
             notifyItemMoved(from, to)
         }
@@ -423,13 +461,13 @@ class RouteFragment : ToolbarFragment(R.layout.layout_route), Toolbar.OnMenuItem
         }
 
         fun remove(index: Int) {
-            ruleList.removeAt(index - 1)
+            ruleList.removeAt(index - ruleOffset)
             notifyItemRemoved(index)
         }
 
         override fun undo(actions: List<Pair<Int, RuleEntity>>) {
             for ((index, item) in actions) {
-                ruleList.add(index - 1, item)
+                ruleList.add(index - ruleOffset, item)
                 notifyItemInserted(index)
             }
         }
@@ -439,6 +477,20 @@ class RouteFragment : ToolbarFragment(R.layout.layout_route), Toolbar.OnMenuItem
             runOnDefaultDispatcher {
                 ProfileManager.deleteRules(rules)
             }
+        }
+
+        override suspend fun onAdd(profile: ProxyEntity) {
+            reload()
+        }
+
+        override suspend fun onUpdated(profileId: Long, trafficStats: TrafficStats) = Unit
+
+        override suspend fun onUpdated(profile: ProxyEntity) {
+            reload()
+        }
+
+        override suspend fun onRemoved(groupId: Long, profileId: Long) {
+            reload()
         }
 
         override suspend fun onAdd(rule: RuleEntity) {
@@ -487,6 +539,33 @@ class RouteFragment : ToolbarFragment(R.layout.layout_route), Toolbar.OnMenuItem
                         Intent.ACTION_VIEW,
                         "https://www.v2fly.org/config/routing.html#ruleobject".toUri()
                     ))
+                }
+            }
+        }
+
+        inner class ProfileRoutingHolder(binding: LayoutRouteItemBinding) : RecyclerView.ViewHolder(binding.root) {
+
+            val profileName = binding.profileName
+            val profileType = binding.profileType
+            val routeOutbound = binding.routeOutbound
+            val editButton = binding.edit
+            val shareLayout = binding.share
+            val enableSwitch = binding.enable
+
+            fun bind() {
+                profileName.setText(R.string.profile_routing_rules)
+                profileType.text = profileRoutingSummary
+                routeOutbound.text = profileRoutingName
+                editButton.visibility = View.GONE
+                shareLayout.visibility = View.GONE
+                itemView.setOnClickListener {
+                    enableSwitch.performClick()
+                }
+                enableSwitch.setOnCheckedChangeListener(null)
+                enableSwitch.isChecked = DataStore.profileRoutingRules
+                enableSwitch.setOnCheckedChangeListener { _, isChecked ->
+                    DataStore.profileRoutingRules = isChecked
+                    needReload()
                 }
             }
         }

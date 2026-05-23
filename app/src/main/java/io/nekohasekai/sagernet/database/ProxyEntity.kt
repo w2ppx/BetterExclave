@@ -605,7 +605,7 @@ data class ProxyEntity(
         fun addProxy(proxy: ProxyEntity): Long
 
         @Insert
-        fun insert(proxies: List<ProxyEntity>)
+        fun insert(proxies: List<ProxyEntity>): List<Long>
 
         @Query("DELETE FROM proxy_entities WHERE groupId = :groupId")
         fun deleteAll(groupId: Long): Int

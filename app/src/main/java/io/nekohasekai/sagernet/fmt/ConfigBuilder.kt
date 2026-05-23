@@ -2232,6 +2232,41 @@ fun buildV2RayConfig(
 
         val isVpn = DataStore.serviceMode == Key.MODE_VPN
 
+        fun RoutingObject.RuleObject.hasProfileRouteMatcher(): Boolean {
+            return !domain.isNullOrEmpty() || !domains.isNullOrEmpty() || !ip.isNullOrEmpty() ||
+                    !port.isNullOrEmpty() || !sourcePort.isNullOrEmpty() || !network.isNullOrEmpty() ||
+                    !source.isNullOrEmpty() || !inboundTag.isNullOrEmpty() || !protocol.isNullOrEmpty() ||
+                    !attrs.isNullOrEmpty() || !uid.isNullOrEmpty() || !ssid.isNullOrEmpty() ||
+                    !networkType.isNullOrEmpty()
+        }
+
+        fun RoutingObject.RuleObject.rewriteProfileRouteTarget(): Boolean {
+            val sourceOutboundTag = outboundTag?.trim()?.lowercase()
+            val sourceBalancerTag = balancerTag?.trim()
+            outboundTag = null
+            balancerTag = null
+            when (sourceOutboundTag) {
+                "direct", "freedom", "bypass" -> outboundTag = TAG_BYPASS
+                "block", "blackhole" -> outboundTag = TAG_BLOCK
+                null, "" -> {
+                    if (sourceBalancerTag.isNullOrEmpty()) return false
+                    if (mainIsBalancer) {
+                        balancerTag = "balancer-$TAG_AGENT"
+                    } else {
+                        outboundTag = tagProxy
+                    }
+                }
+                else -> {
+                    if (mainIsBalancer) {
+                        balancerTag = "balancer-$TAG_AGENT"
+                    } else {
+                        outboundTag = tagProxy
+                    }
+                }
+            }
+            return true
+        }
+
         for (rule in extraRules) {
             val uidList = mutableListOf<Int>()
             if (rule.packages.isNotEmpty() || rule.customPackageNames.isNotEmpty()) {
@@ -2387,6 +2422,24 @@ fun buildV2RayConfig(
                 })
             }
 
+        }
+
+        if (!forTest && !forExport && routeMode == RouteMode.RULE && DataStore.profileRoutingRules) {
+            val profileRoutingRules = proxy.requireBean().profileRoutingRules
+            if (profileRoutingRules.isNotEmpty()) {
+                runCatching {
+                    parseJson(profileRoutingRules).asJsonArray.forEach { element ->
+                        if (!element.isJsonObject) return@forEach
+                        val rule = gson.fromJson(element, RoutingObject.RuleObject::class.java)
+                            ?: return@forEach
+                        if (!rule.type.isNullOrEmpty() && rule.type != "field") return@forEach
+                        if (!rule.hasProfileRouteMatcher()) return@forEach
+                        if (!rule.rewriteProfileRouteTarget()) return@forEach
+                        rule.type = "field"
+                        routing.rules.add(rule)
+                    }
+                }
+            }
         }
 
         if (requireWs) {
@@ -2971,14 +3024,14 @@ fun buildCustomConfig(proxy: ProxyEntity, forTest: Boolean = false, forExport: B
     inbounds.forEach { it.init() }
     val inboundArray = JsonArray(inbounds.size)
     for (inbound in inbounds) {
-        inboundArray.add(parseJson(gson.toJson(inbound), lenient = true))
+        inboundArray.add(gson.toJsonTree(inbound))
     }
     config.add("inbounds", inboundArray)
     if (flushOutbounds) {
         outbounds!!.forEach { it.init() }
         val outboundArray = JsonArray(outbounds.size)
         for (outbound in outbounds) {
-            outboundArray.add(parseJson(gson.toJson(outbound), lenient = true))
+            outboundArray.add(gson.toJsonTree(outbound))
         }
     }
 

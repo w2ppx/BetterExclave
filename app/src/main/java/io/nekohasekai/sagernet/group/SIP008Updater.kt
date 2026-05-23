@@ -139,25 +139,30 @@ object SIP008Updater : GroupUpdater() {
         val exists = SagerDatabase.proxyDao.getByGroup(proxyGroup.id)
         val duplicate = ArrayList<String>()
         if (subscription.deduplication) {
-            val uniqueProfiles = LinkedHashSet<AbstractBean>()
-            val uniqueNames = HashMap<AbstractBean, String>()
+            data class DedupEntry(
+                val bean: AbstractBean,
+                val name: String,
+                val index: Int,
+                var reported: Boolean = false,
+            )
+
+            val uniqueProfiles = LinkedHashMap<AbstractBean, DedupEntry>()
             for (proxy in profiles) {
-                if (!uniqueProfiles.add(proxy)) {
-                    val index = uniqueProfiles.indexOf(proxy)
-                    if (uniqueNames.containsKey(proxy)) {
-                        val name = uniqueNames[proxy]!!.replace(" ($index)", "")
+                val existing = uniqueProfiles[proxy]
+                if (existing != null) {
+                    if (!existing.reported) {
+                        val name = existing.name.replace(" (${existing.index})", "")
                         if (name.isNotEmpty()) {
-                            duplicate.add("$name ($index)")
-                            uniqueNames[proxy] = ""
+                            duplicate.add("$name (${existing.index})")
+                            existing.reported = true
                         }
                     }
-                    duplicate.add(proxy.displayName() + " ($index)")
+                    duplicate.add(proxy.displayName() + " (${existing.index})")
                 } else {
-                    uniqueNames[proxy] = proxy.displayName()
+                    uniqueProfiles[proxy] = DedupEntry(proxy, proxy.displayName(), uniqueProfiles.size)
                 }
             }
-            uniqueProfiles.retainAll(uniqueNames.keys)
-            profiles = uniqueProfiles.toMutableList()
+            profiles = uniqueProfiles.values.map { it.bean }.toMutableList()
         }
 
         val profileMap = profiles.associateBy { it.profileId }
@@ -171,6 +176,7 @@ object SIP008Updater : GroupUpdater() {
         }.toMap()
 
         val toUpdate = ArrayList<ProxyEntity>()
+        val toAdd = ArrayList<ProxyEntity>()
         val added = mutableListOf<String>()
         val updated = mutableMapOf<String, String>()
         val deleted = toDelete.map { it.displayName() }
@@ -198,7 +204,7 @@ object SIP008Updater : GroupUpdater() {
                 }
             } else {
                 changed++
-                SagerDatabase.proxyDao.addProxy(ProxyEntity(
+                toAdd.add(ProxyEntity(
                     groupId = proxyGroup.id, userOrder = userOrder
                 ).apply {
                     putBean(bean)
@@ -208,11 +214,19 @@ object SIP008Updater : GroupUpdater() {
             userOrder++
         }
 
-        SagerDatabase.proxyDao.updateProxy(toUpdate)
-        SagerDatabase.proxyDao.deleteProxy(toDelete)
-
-        subscription.lastUpdated = System.currentTimeMillis() / 1000
-        SagerDatabase.groupDao.updateGroup(proxyGroup)
+        SagerDatabase.runInTransaction {
+            if (toAdd.isNotEmpty()) {
+                SagerDatabase.proxyDao.insert(toAdd)
+            }
+            if (toUpdate.isNotEmpty()) {
+                SagerDatabase.proxyDao.updateProxy(toUpdate)
+            }
+            if (toDelete.isNotEmpty()) {
+                SagerDatabase.proxyDao.deleteProxy(toDelete)
+            }
+            subscription.lastUpdated = System.currentTimeMillis() / 1000
+            SagerDatabase.groupDao.updateGroup(proxyGroup)
+        }
         finishUpdate(proxyGroup)
 
         if (byUser && userInterface != null) {

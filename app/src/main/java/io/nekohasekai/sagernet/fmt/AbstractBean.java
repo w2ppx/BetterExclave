@@ -46,6 +46,7 @@ public abstract class AbstractBean extends Serializable {
 
     public int extraType;
     public String profileId;
+    public String profileRoutingRules;
 
     public String displayName() {
         if (!name.isEmpty()) {
@@ -77,6 +78,7 @@ public abstract class AbstractBean extends Serializable {
         finalPort = serverPort;
 
         if (profileId == null) profileId = "";
+        if (profileRoutingRules == null) profileRoutingRules = "";
     }
 
 
@@ -85,13 +87,15 @@ public abstract class AbstractBean extends Serializable {
     @Override
     public void serializeToBuffer(@NonNull ByteBufferOutput output) {
         serialize(output);
-        output.writeInt(2);
+        output.writeInt(3);
         if (!serializeWithoutName) {
             output.writeString(name);
         }
         output.writeInt(extraType);
-        if (extraType == ExtraType.NONE) return;
-        output.writeString(profileId);
+        if (extraType != ExtraType.NONE) {
+            output.writeString(profileId);
+        }
+        output.writeString(profileRoutingRules);
     }
 
     @Override
@@ -100,15 +104,19 @@ public abstract class AbstractBean extends Serializable {
         int extraVersion = input.readInt();
         name = input.readString();
         extraType = input.readInt();
-        if (extraType == ExtraType.NONE) return;
-        profileId = input.readString();
+        if (extraType != ExtraType.NONE) {
+            profileId = input.readString();
 
-        if (extraVersion < 2 && extraType == ExtraType.OOCv1) {
-            input.readString();
-            if (extraVersion >= 1) {
+            if (extraVersion < 2 && extraType == ExtraType.OOCv1) {
                 input.readString();
+                if (extraVersion >= 1) {
+                    input.readString();
+                }
+                KryosKt.readStringList(input);
             }
-            KryosKt.readStringList(input);
+        }
+        if (extraVersion >= 3) {
+            profileRoutingRules = input.readString();
         }
     }
 

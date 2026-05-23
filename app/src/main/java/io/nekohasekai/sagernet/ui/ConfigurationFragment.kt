@@ -77,6 +77,7 @@ import kotlinx.coroutines.sync.withLock
 import libsagernetcore.Libsagernetcore
 import java.util.*
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.ConcurrentHashMap
 import java.util.zip.ZipInputStream
 import kotlin.concurrent.timerTask
 import androidx.core.net.toUri
@@ -550,8 +551,13 @@ class ConfigurationFragment @JvmOverloads constructor(
             }
             R.id.action_remove_duplicate -> {
                 runOnDefaultDispatcher {
+                    val aggregateProfileTypes = setOf(
+                        ProxyEntity.TYPE_BALANCER,
+                        ProxyEntity.TYPE_CHAIN,
+                        ProxyEntity.TYPE_CONFIG,
+                    )
                     val profiles = SagerDatabase.proxyDao.getByGroup(DataStore.currentGroupId())
-                        .filter { !it.hidden }
+                        .filter { !it.hidden && it.type !in aggregateProfileTypes }
                     val toClear = mutableListOf<ProxyEntity>()
                     val uniqueProxies = LinkedHashSet<Protocols.Deduplication>()
                     for (p in profiles) {
@@ -1201,6 +1207,7 @@ class ConfigurationFragment @JvmOverloads constructor(
             ProfileManager.addListener(adapter)
             GroupManager.addListener(adapter)
             configurationListView.adapter = adapter
+            (configurationListView.itemAnimator as? DefaultItemAnimator)?.supportsChangeAnimations = false
             configurationListView.setItemViewCacheSize(20)
 
             if (!parent.select) {
@@ -1273,6 +1280,8 @@ class ConfigurationFragment @JvmOverloads constructor(
             var configurationIdList: MutableList<Long> = mutableListOf()
             val configurationList = HashMap<Long, ProxyEntity>()
             val pendingDeletedIds = java.util.concurrent.ConcurrentHashMap.newKeySet<Long>()
+            private val selectionPayload = Any()
+            private val serverInfoCache = ConcurrentHashMap<String, String?>()
 
             private fun getItem(profileId: Long): ProxyEntity? {
                 var profile = configurationList[profileId]
@@ -1308,6 +1317,23 @@ class ConfigurationFragment @JvmOverloads constructor(
                     }
                 } catch (ignored: NullPointerException) { // when group deleted
                 }
+            }
+
+            override fun onBindViewHolder(
+                holder: ConfigurationHolder,
+                position: Int,
+                payloads: MutableList<Any>,
+            ) {
+                if (payloads.contains(selectionPayload)) {
+                    try {
+                        getItemAt(position)?.let {
+                            holder.updateSelection(it)
+                        }
+                    } catch (ignored: NullPointerException) { // when group deleted
+                    }
+                    return
+                }
+                super.onBindViewHolder(holder, position, payloads)
             }
 
             override fun getItemCount(): Int {
@@ -1407,9 +1433,29 @@ class ConfigurationFragment @JvmOverloads constructor(
                     if (::undoManager.isInitialized) {
                         undoManager.flush()
                     }
+                    val previous = configurationList[profile.id]
                     configurationList[profile.id] = profile
-                    notifyItemChanged(index)
+                    if (previous == profile) {
+                        notifyItemChanged(index, selectionPayload)
+                    } else {
+                        notifyItemChanged(index)
+                    }
                 }
+            }
+
+            fun notifySelectionChanged(profileId: Long) {
+                val index = configurationIdList.indexOf(profileId)
+                if (index >= 0) {
+                    notifyItemChanged(index, selectionPayload)
+                }
+            }
+
+            fun cachedServerInfo(host: String): String? {
+                return serverInfoCache[host]
+            }
+
+            fun cacheServerInfo(host: String, text: String?) {
+                serverInfoCache[host] = text ?: ""
             }
 
             override suspend fun onUpdated(profileId: Long, trafficStats: TrafficStats) {
@@ -1549,7 +1595,8 @@ class ConfigurationFragment @JvmOverloads constructor(
                                 lastSelected = DataStore.selectedProxy
                                 DataStore.selectedProxy = proxyEntity.id
                                 onMainDispatcher {
-                                    selectedView.visibility = View.VISIBLE
+                                    adapter.notifySelectionChanged(lastSelected)
+                                    adapter.notifySelectionChanged(proxyEntity.id)
                                 }
                             }
 
@@ -1579,17 +1626,27 @@ class ConfigurationFragment @JvmOverloads constructor(
                     && proxyEntity.type != ProxyEntity.TYPE_CHAIN && proxyEntity.type != ProxyEntity.TYPE_CONFIG) {
                     val host = try { proxyEntity.requireBean().serverAddress } catch (_: Throwable) { null }
                     if (!host.isNullOrBlank()) {
-                        val entityId = proxyEntity.id
-                        runOnDefaultDispatcher {
-                            val info = io.nekohasekai.sagernet.utils.GeoIPManager.lookup(host)
-                            onMainDispatcher {
-                                if (entity.id != entityId) return@onMainDispatcher
-                                if (info != null && (info.countryCode != null || info.asnName != null)) {
+                        val cachedInfo = adapter.cachedServerInfo(host)
+                        if (cachedInfo != null) {
+                            profileServerInfo.text = cachedInfo
+                            profileServerInfo.isVisible = cachedInfo.isNotEmpty()
+                        } else {
+                            val entityId = proxyEntity.id
+                            runOnDefaultDispatcher {
+                                val info = io.nekohasekai.sagernet.utils.GeoIPManager.lookup(host)
+                                val text = if (info != null && (info.countryCode != null || info.asnName != null)) {
                                     val flag = io.nekohasekai.sagernet.utils.GeoIPManager.countryFlag(info.countryCode)
                                     val name = info.asnName ?: info.countryName ?: ""
                                     val asn = info.asn?.let { " (AS$it)" } ?: ""
-                                    profileServerInfo.text = listOf(flag, "$name$asn").filter { it.isNotEmpty() }.joinToString(" ")
-                                    profileServerInfo.isVisible = true
+                                    listOf(flag, "$name$asn").filter { it.isNotEmpty() }.joinToString(" ")
+                                } else {
+                                    ""
+                                }
+                                adapter.cacheServerInfo(host, text)
+                                onMainDispatcher {
+                                    if (entity.id != entityId) return@onMainDispatcher
+                                    profileServerInfo.text = text
+                                    profileServerInfo.isVisible = text.isNotEmpty()
                                 }
                             }
                         }
@@ -1672,15 +1729,9 @@ class ConfigurationFragment @JvmOverloads constructor(
                 deleteButton.isGone = parent.select
                 shareButton.isGone = parent.select
 
-                runOnDefaultDispatcher {
-                    val selected = (parent.selectedItem?.id
-                        ?: DataStore.selectedProxy) == proxyEntity.id
-                    val started = selected && SagerNet.started && DataStore.startedProfile == proxyEntity.id
-                    onMainDispatcher {
-                        deleteButton.isEnabled = !started
-                        selectedView.visibility = if (selected) View.VISIBLE else View.INVISIBLE
-                    }
+                updateSelection(proxyEntity)
 
+                runOnDefaultDispatcher {
                     fun showShare(anchor: View) {
                         val popup = PopupMenu(requireContext(), anchor)
                         popup.menuInflater.inflate(R.menu.profile_share_menu, popup.menu)
@@ -1731,6 +1782,16 @@ class ConfigurationFragment @JvmOverloads constructor(
                     }
                 }
 
+            }
+
+            fun updateSelection(proxyEntity: ProxyEntity = entity) {
+                val parent = parent ?: return
+                if (!::entity.isInitialized) return
+
+                val selected = (parent.selectedItem?.id ?: DataStore.selectedProxy) == proxyEntity.id
+                val started = selected && SagerNet.started && DataStore.startedProfile == proxyEntity.id
+                deleteButton.isEnabled = !started
+                selectedView.visibility = if (selected) View.VISIBLE else View.INVISIBLE
             }
 
             fun updateTraffic(proxyEntity: ProxyEntity) {

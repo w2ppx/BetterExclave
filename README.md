@@ -14,6 +14,7 @@ A fork of Exclave with some QoL features.
 - Transport and security in the type label (`VLESS ⫽ gRPC ⫽ REALITY`,
   `splithttp` → `XHTTP`).
 - **Reconnect after network change** and **Auto-restart Hysteria 2** options.
+- Various performance improvements.
 
 ## Original README:
 

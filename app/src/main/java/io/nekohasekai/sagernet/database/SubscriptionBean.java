@@ -44,6 +44,7 @@ public class SubscriptionBean extends Serializable {
 
     public String nameFilter;
     public String nameFilter1;
+    public Boolean importRoutingRules;
     public Boolean happSpoof;
     public String happAppVersion;
     public String happOs;
@@ -58,7 +59,7 @@ public class SubscriptionBean extends Serializable {
 
     @Override
     public void serializeToBuffer(ByteBufferOutput output) {
-        output.writeInt(10);
+        output.writeInt(11);
         output.writeInt(type);
         output.writeString(link);
         output.writeBoolean(deduplication);
@@ -72,6 +73,7 @@ public class SubscriptionBean extends Serializable {
         output.writeLong(expiryDate);
         output.writeString(nameFilter);
         output.writeString(nameFilter1);
+        output.writeBoolean(importRoutingRules);
         output.writeBoolean(happSpoof);
         output.writeString(happAppVersion);
         output.writeString(happOs);
@@ -161,6 +163,10 @@ public class SubscriptionBean extends Serializable {
             nameFilter1 = input.readString();
         }
 
+        if (version >= 11) {
+            importRoutingRules = input.readBoolean();
+        }
+
         if (version >= 9) {
             happSpoof = input.readBoolean();
         }
@@ -240,6 +246,7 @@ public class SubscriptionBean extends Serializable {
         if (bytesRemaining == null) bytesRemaining = 0L;
         if (nameFilter == null) nameFilter = "";
         if (nameFilter1 == null) nameFilter1 = "";
+        if (importRoutingRules == null) importRoutingRules = false;
         if (happSpoof == null) happSpoof = false;
         if (happAppVersion == null) happAppVersion = "3.21.1";
         if (happOs == null) happOs = "Android";
