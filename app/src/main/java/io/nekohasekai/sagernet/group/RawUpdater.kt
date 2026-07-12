@@ -527,12 +527,14 @@ object RawUpdater : GroupUpdater() {
                 protectBalancerEntryBeans(entryBeans.map { (_, bean) -> bean })
                 val multipleBalancers = balancers.size >= 2
                 balancers.forEach { b ->
-                    val selector = b.getStringArray("selector") ?: return@forEach
-                    if (selector.isEmpty()) return@forEach
+                    val selector = b.getStringArray("selector").orEmpty()
+                    val fallbackTag = b.getString("fallbackTag")?.trim().orEmpty()
+                    if (selector.isEmpty() && fallbackTag.isEmpty()) return@forEach
                     val strategy = b.getObject("strategy")?.getString("type") ?: "random"
                     val memberBeans = ArrayList<AbstractBean>()
                     for ((tag, bean) in entryBeans) {
-                        if (selector.any { p -> tag.startsWith(p) } && memberBeans.none { it === bean }) {
+                        val selected = selector.any { prefix -> tag.startsWith(prefix) }
+                        if ((selected || tag == fallbackTag) && memberBeans.none { it === bean }) {
                             memberBeans.add(bean)
                         }
                     }
