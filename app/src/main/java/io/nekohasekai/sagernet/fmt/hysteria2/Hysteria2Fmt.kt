@@ -30,13 +30,17 @@ fun parseHysteria2(rawURL: String): Hysteria2Bean {
     var url = rawURL
 
     // fuck port hopping URL
-    val hostPort = url.substringAfter("://").substringAfter("@")
+    val authority = url.substringAfter("://")
+    val hostPortStart = url.length - authority.length + authority.indexOf("@") + 1
+    val hostPort = authority.substringAfter("@")
         .substringBefore("#").substringBefore("?").substringBefore("/")
     var port = ""
     if (!hostPort.endsWith("]") && hostPort.lastIndexOf(":") > 0) {
         port = hostPort.substringAfterLast(":")
         if (port.isNotEmpty() && port.isValidHysteriaMultiPort()) {
-            url = url.replaceFirst(":$port", ":0")
+            // replace the port in place, the userinfo may contain the same text
+            val portStart = hostPortStart + hostPort.lastIndexOf(":") + 1
+            url = url.substring(0, portStart) + "0" + url.substring(portStart + port.length)
         }
     }
 
@@ -125,8 +129,8 @@ fun Hysteria2Bean.toUri(): String? {
         && serverNameToVerify.listByLineOrComma().isEmpty()) {
         builder.addQueryParameter("insecure", "1")
     }
-    if (pinnedPeerCertificateSha256.isNotEmpty()) {
-        val pinSHA256 = pinnedPeerCertificateSha256.listByLineOrComma()[0].replace(":", "").lowercase()
+    pinnedPeerCertificateSha256.listByLineOrComma().firstOrNull()?.let {
+        val pinSHA256 = it.replace(":", "").replace("-", "").lowercase()
         try {
             require(pinSHA256.hexToByteArray().size == 32)
         } catch (_: Exception) {

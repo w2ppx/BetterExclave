@@ -21,11 +21,11 @@
 package io.nekohasekai.sagernet
 
 import android.app.Activity
+import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
-import android.content.pm.ShortcutManager
-import android.os.Build
+import android.content.pm.PackageManager
 import android.os.Bundle
-import androidx.core.content.getSystemService
 import androidx.core.content.pm.ShortcutInfoCompat
 import androidx.core.content.pm.ShortcutManagerCompat
 import androidx.core.graphics.drawable.IconCompat
@@ -33,32 +33,61 @@ import io.nekohasekai.sagernet.aidl.ISagerNetService
 import io.nekohasekai.sagernet.bg.BaseService
 import io.nekohasekai.sagernet.bg.SagerConnection
 import io.nekohasekai.sagernet.database.DataStore
+import io.nekohasekai.sagernet.ktx.app
 
 @Suppress("DEPRECATION")
 class QuickToggleShortcut : Activity(), SagerConnection.Callback {
+
+    companion object {
+        private const val SHORTCUT_ID = "toggle"
+
+        fun buildShortcut(context: Context) = ShortcutInfoCompat.Builder(context, SHORTCUT_ID)
+            .setIntent(Intent(context, QuickToggleShortcut::class.java).setAction(Intent.ACTION_MAIN))
+            .setIcon(IconCompat.createWithResource(context, R.drawable.ic_qu_shadowsocks_launcher))
+            .setShortLabel(context.getString(R.string.quick_toggle))
+            .setLongLabel(context.getString(R.string.quick_toggle))
+            .build()
+
+        private val componentName by lazy { ComponentName(app, QuickToggleShortcut::class.java) }
+        var enabled: Boolean
+            get() = when (app.packageManager.getComponentEnabledSetting(componentName)) {
+                PackageManager.COMPONENT_ENABLED_STATE_ENABLED -> true
+                PackageManager.COMPONENT_ENABLED_STATE_DISABLED -> false
+                PackageManager.COMPONENT_ENABLED_STATE_DEFAULT -> {
+                    app.packageManager.getReceiverInfo(componentName, 0).enabled
+                }
+                else -> true
+            }
+            set(value) = app.packageManager.setComponentEnabledSetting(
+                componentName,
+                if (value) {
+                    PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+                } else {
+                    PackageManager.COMPONENT_ENABLED_STATE_DISABLED
+                },
+                PackageManager.DONT_KILL_APP,
+            )
+    }
+
     private val connection = SagerConnection()
     private var profileId = -1L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (DataStore.disableToggleShortcut) {
+            enabled = false
+            finish()
+        }
         if (intent.action == Intent.ACTION_CREATE_SHORTCUT) {
-            setResult(RESULT_OK, ShortcutManagerCompat.createShortcutResultIntent(this,
-                ShortcutInfoCompat.Builder(this, "toggle")
-                    .setIntent(Intent(this,
-                        QuickToggleShortcut::class.java).setAction(Intent.ACTION_MAIN))
-                    .setIcon(IconCompat.createWithResource(this,
-                        R.drawable.ic_qu_shadowsocks_launcher))
-                    .setShortLabel(getString(R.string.quick_toggle))
-                    .build()))
+            setResult(RESULT_OK, ShortcutManagerCompat.createShortcutResultIntent(
+                this, buildShortcut(this)))
             finish()
         } else {
             profileId = intent.getLongExtra("profile", -1L)
             connection.connect(this, this)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N_MR1) {
-                getSystemService<ShortcutManager>()!!.reportShortcutUsed(
-                    if (profileId >= 0L) "shortcut-profile-$profileId" else "toggle"
-                )
-            }
+            ShortcutManagerCompat.reportShortcutUsed(this,
+                if (profileId >= 0L) "shortcut-profile-$profileId" else "toggle"
+            )
         }
     }
 

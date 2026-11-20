@@ -1,5 +1,5 @@
 [libraries]
-android-gradle-plugin = { module = "com.android.tools.build:gradle", version = "9.5.0" }
+android-gradle-plugin = { module = "com.android.tools.build:gradle", version = "9.5.1" }
 kotlin-gradle-plugin = { module = "org.jetbrains.kotlin:kotlin-gradle-plugin", version = "2.4.21" }
 okhttp = { module = "com.squareup.okhttp3:okhttp", version = "5.5.1" }
 kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version = "1.11.0" }
@@ -33,7 +33,7 @@ room-ktx = { module = "androidx.room:room-ktx", version = "2.8.5" }
 #noinspection SimilarGradleDependency
 material = { module = "com.google.android.material:material", version = "1.14.0" }
 gson = { module = "com.google.code.gson:gson", version = "2.15.0" }
-bouncycastle = { module = "org.bouncycastle:bcpkix-jdk18on", version = "1.86" }
+bouncycastle = { module = "org.bouncycastle:bcpkix-jdk18on", version = "1.87" }
 zxing-core = { module = "com.google.zxing:core", version = "3.5.4" }
 protobuf-java = { module = "com.google.protobuf:protobuf-java", version = "4.36.2" }
 snakeyaml = { module = "org.yaml:snakeyaml", version = "2.7" }
@@ -78,6 +78,6 @@ room-ktx-minSdk21 = { module = "androidx.room:room-ktx", version = "2.7.2" }
 material-minSdk21 = { module = "com.google.android.material:material", version = "1.13.0" }
 
 [plugins]
-ksp = { id = "com.google.devtools.ksp", version = "2.3.13" }
+ksp = { id = "com.google.devtools.ksp", version = "2.3.14" }
 aboutlibraries = { id = "com.mikepenz.aboutlibraries.plugin", version = "15.3.0" }
 protobuf = { id = "com.google.protobuf", version = "0.10.1" }

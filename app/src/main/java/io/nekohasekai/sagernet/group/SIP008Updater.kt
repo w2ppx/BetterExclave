@@ -45,7 +45,7 @@ object SIP008Updater : GroupUpdater() {
             if (link.startsWith("content://", ignoreCase = true)) {
                 val contentText = app.contentResolver.openInputStream(link.toUri())
                     ?.bufferedReader()
-                    ?.readText()
+                    ?.use { it.readText() }
 
                 sip008Response = contentText?.let { parseJson(contentText).asJsonObject }
                     ?: error(app.getString(R.string.no_proxies_found_in_subscription))
@@ -53,7 +53,7 @@ object SIP008Updater : GroupUpdater() {
 
                 val response = Libexclavecore.newHttpClient().apply {
                     if (SagerNet.started && DataStore.startedProfile > 0) {
-                        useUDS(app.cacheDir.toString() + "/ipc.sock")
+                        useUDS(SagerNet.deviceStorage.noBackupFilesDir.toString() + "/ipc.sock")
                     }
                 }.newRequest().apply {
                     setURL(subscription.link)

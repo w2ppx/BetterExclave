@@ -52,13 +52,13 @@ object AgeUpdater : GroupUpdater() {
         val link = subscription.link
         var proxies: List<AbstractBean>
         if (link.startsWith("content://", ignoreCase = true)) {
-            val content = app.contentResolver.openInputStream(link.toUri())?.readBytes()
+            val content = app.contentResolver.openInputStream(link.toUri())?.use { it.readBytes() }
             val data = Libexclavecore.ageArmerDecrypt(content, subscription.agePrivateKey)
             proxies = data?.let { parseRaw(String(data)) } ?: error(app.getString(R.string.no_proxies_found_in_subscription))
         } else {
             val response = Libexclavecore.newHttpClient().apply {
                 if (SagerNet.started && DataStore.startedProfile > 0) {
-                    useUDS(app.cacheDir.toString() + "/ipc.sock")
+                    useUDS(SagerNet.deviceStorage.noBackupFilesDir.toString() + "/ipc.sock")
                 }
             }.newRequest().apply {
                 setURL(subscription.link)

@@ -59,7 +59,7 @@ object HostResolver {
     fun newClient(): HTTPClient = Libexclavecore.newHttpClient().apply {
         keepAlive()
         if (SagerNet.started && DataStore.startedProfile > 0) {
-            useUDS(SagerNet.application.cacheDir.toString() + "/ipc.sock")
+            useUDS(SagerNet.deviceStorage.noBackupFilesDir.toString() + "/ipc.sock")
         }
     }
 

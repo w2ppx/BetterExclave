@@ -38,6 +38,7 @@ import java.io.BufferedReader
 import java.io.StringReader
 import java.util.Locale
 import java.util.Properties
+import kotlin.enums.enumEntries
 
 object DataStore : OnPreferenceDataStoreChangeListener {
 
@@ -47,38 +48,49 @@ object DataStore : OnPreferenceDataStoreChangeListener {
     fun init() {
         configurationStore.registerChangeListener(this)
 
-        // migrate from 0.14.10
-        val ipv6Mode0 = configurationStore.getString("ipv6Mode0")?.toIntOrNull()
-        // 0: Disable, 1: Enable, 2: Prefer, 3: Only
-        if (configurationStore.getBoolean("enableVPNInterfaceIPv6Address") == null) {
-            when (ipv6Mode0) {
-                0 -> configurationStore.putBoolean("enableVPNInterfaceIPv6Address", false)
-                1, 2, 3 -> configurationStore.putBoolean("enableVPNInterfaceIPv6Address", true)
-            }
+        // BuildConfig.VERSION_CODE is the version code of the armeabi-v7a APK
+        val previousVersionCode = configurationStore.getInt(Key.APP_VERSION_CODE)
+        if (previousVersionCode != BuildConfig.VERSION_CODE) {
+            configurationStore.putInt(Key.APP_VERSION_CODE, BuildConfig.VERSION_CODE)
         }
-        if (configurationStore.getBoolean("resolveDestination") == true
-            && configurationStore.getString("outboundDomainStrategy") == null) {
-            when (ipv6Mode0) {
-                0 -> configurationStore.putString("outboundDomainStrategy", "UseIPv4")
-                1 -> configurationStore.putString("outboundDomainStrategy", "PreferIPv4")
-                2 -> configurationStore.putString("outboundDomainStrategy", "PreferIPv6")
-                3 -> configurationStore.putString("outboundDomainStrategy", "UseIPv6")
+
+        if (previousVersionCode == null || previousVersionCode < 2092 /* migrate from 0.17.68 */) {
+            // migrate from 0.14.10
+            // 0: Disable, 1: Enable, 2: Prefer, 3: Only
+            val ipv6Mode0 = configurationStore.getString("ipv6Mode0")?.toIntOrNull()
+            if (configurationStore.getBoolean(Key.ENABLE_VPN_INTERFACE_IPV6_ADDRESS) == null) {
+                configurationStore.putBoolean(Key.ENABLE_VPN_INTERFACE_IPV6_ADDRESS, ipv6Mode0 == 0)
             }
-        }
-        if (configurationStore.getBoolean("resolveDestinationForDirect") == true
-            && configurationStore.getString("outboundDomainStrategyForDirect") == null) {
-            when (ipv6Mode0) {
-                0 -> configurationStore.putString("outboundDomainStrategyForDirect", "UseIPv4")
-                1 -> configurationStore.putString("outboundDomainStrategyForDirect", "PreferIPv4")
-                2 -> configurationStore.putString("outboundDomainStrategyForDirect", "PreferIPv6")
-                3 -> configurationStore.putString("outboundDomainStrategyForDirect", "UseIPv6")
+            if (configurationStore.getBoolean("resolveDestination") == true &&
+                configurationStore.getString(Key.OUTBOUND_DOMAIN_STRATEGY) == null) {
+                configurationStore.putString(Key.OUTBOUND_DOMAIN_STRATEGY, when (ipv6Mode0) {
+                    0 -> "UseIPv4"
+                    1 -> "PreferIPv4"
+                    2 -> "PreferIPv6"
+                    3 -> "UseIPv6"
+                    else -> "UseIPv4"
+                })
             }
-        }
-        // migrate from 0.14.14
-        val outboundDomainStrategy = configurationStore.getString("outboundDomainStrategy")
-        if (outboundDomainStrategy != null && outboundDomainStrategy != "AsIs"
-            && configurationStore.getString("outboundDomainStrategyForServer") == null) {
-            configurationStore.putString("outboundDomainStrategyForServer", outboundDomainStrategy)
+            if (configurationStore.getBoolean("resolveDestinationForDirect") == true &&
+                configurationStore.getString(Key.OUTBOUND_DOMAIN_STRATEGY_FOR_DIRECT) == null) {
+                configurationStore.putString(Key.OUTBOUND_DOMAIN_STRATEGY_FOR_DIRECT, when (ipv6Mode0) {
+                    0 -> "UseIPv4"
+                    1 -> "PreferIPv4"
+                    2 -> "PreferIPv6"
+                    3 -> "UseIPv6"
+                    else -> "UseIPv4"
+                })
+            }
+            // migrate from 0.14.14
+            configurationStore.getString(Key.OUTBOUND_DOMAIN_STRATEGY_FOR_DIRECT)?.takeIf { it != "AsIs" }?.also {
+                if (configurationStore.getString(Key.OUTBOUND_DOMAIN_STRATEGY_FOR_SERVER) == null) {
+                    configurationStore.putString(Key.OUTBOUND_DOMAIN_STRATEGY_FOR_SERVER, it)
+                }
+            }
+            // migrate from 0.17.68
+            configurationStore.getString(Key.EXPERIMENTAL_FLAGS)?.takeIf { it.isNotEmpty() }?.also {
+                configureExperimentalFlags(it)
+            }
         }
     }
 
@@ -189,6 +201,8 @@ object DataStore : OnPreferenceDataStoreChangeListener {
     var fabStyle by configurationStore.stringToInt(Key.FAB_STYLE) { 1 }
     var useIECUnit by configurationStore.boolean(Key.USE_IEC_UNIT)
     var queryAllPackagesAlternativeMethod by configurationStore.boolean(Key.QUERY_ALL_PACKAGES_ALTERNATIVE_METHOD)
+    var disableToggleShortcut by configurationStore.boolean(Key.DISABLE_TOGGLE_SHORTCUT)
+    var disableTaskerIntegration by configurationStore.boolean(Key.DISABLE_TASKER_INTEGRATION)
 
     var enableFragment by configurationStore.boolean(Key.ENABLE_FRAGMENT)
     var enableFragmentForDirect by configurationStore.boolean(Key.ENABLE_FRAGMENT_FOR_DIRECT)
@@ -342,6 +356,7 @@ object DataStore : OnPreferenceDataStoreChangeListener {
     var serverSplithttpExtra by profileCacheStore.string(Key.SERVER_SPLITHTTP_EXTRA)
     var serverSplithttpSessionIDTable by profileCacheStore.string(Key.SERVER_SPLITHTTP_SESSION_ID_TABLE)
     var serverSplithttpSessionIDLength by profileCacheStore.string(Key.SERVER_SPLITHTTP_SESSION_ID_LENGTH)
+    var serverSplithttpChromeParrot by profileCacheStore.boolean(Key.SERVER_SPLITHTTP_CHROME_PARROT)
     var serverWsBrowserForwarding by profileCacheStore.boolean(Key.SERVER_WS_BROWSER_FORWARDING)
     var serverShBrowserForwarding by profileCacheStore.boolean(Key.SERVER_SH_BROWSER_FORWARDING)
     var serverEarlyDataHeaderName by profileCacheStore.string(Key.SERVER_EARLY_DATA_HEADER_NAME)
@@ -437,8 +452,6 @@ object DataStore : OnPreferenceDataStoreChangeListener {
     var serverSingMuxPadding by profileCacheStore.boolean(Key.SERVER_SING_MUX_PADDING)
 
     var experimentalFlags by configurationStore.string(Key.EXPERIMENTAL_FLAGS)
-    var overrideUTLSFingerprintForTLS by configurationStore.string(Key.OVERRIDE_UTLS_FP_TLS)
-    var overrideUTLSFingerprintForREALITY by configurationStore.string(Key.OVERRIDE_UTLS_FP_REALITY)
 
     var balancerType by profileCacheStore.stringToInt(Key.BALANCER_TYPE)
     var balancerGroup by profileCacheStore.stringToLong(Key.BALANCER_GROUP)
@@ -517,10 +530,6 @@ object DataStore : OnPreferenceDataStoreChangeListener {
     var postNotificationsPermissionRequested by configurationStore.boolean(Key.POST_NOTIFICATION_PERMISSION_REQUESTED)
     var accessLocalNetworkPermissionRequested by configurationStore.boolean(Key.ACCESS_LOCAL_NETWORK_PERMISSION_REQUESTED)
 
-    var experimentalFlagsProperties = Properties().apply {
-        load(BufferedReader(StringReader(experimentalFlags)))
-    }
-
     var stunServerAddress by configurationStore.string(Key.STUN_SERVER_ADDRESS)
     var stunTestType by configurationStore.stringToInt(Key.STUN_TEST_TYPE)
     var certProberServerAddress by configurationStore.string(Key.CERT_PROBER_SERVER_ADDRESS) { "example.com" }
@@ -530,6 +539,89 @@ object DataStore : OnPreferenceDataStoreChangeListener {
     var certProberProtocol by configurationStore.stringToInt(Key.CERT_PROBER_PROTOCOL)
     var certProberHashType by configurationStore.stringToInt(Key.CERT_PROBER_CERT_HASH_TYPE)
 
+    var singuot by configurationStore.boolean(ExperimentalFlags.singuot.name)
+    var singmux by configurationStore.boolean(ExperimentalFlags.singmux.name)
+    var singSnellUserKey by configurationStore.boolean(ExperimentalFlags.singSnellUserKey.name)
+    var useInternalV2RayPlugin by configurationStore.boolean(ExperimentalFlags.useInternalV2RayPlugin.name)
+    var useInternalObfsLocal by configurationStore.boolean(ExperimentalFlags.useInternalObfsLocal.name)
+    var tunIPv4Address by configurationStore.string(ExperimentalFlags.tunIPv4Address.name)
+    var tunIPv4DNSAddress by configurationStore.string(ExperimentalFlags.tunIPv4DNSAddress.name)
+    var tunIPv6Address by configurationStore.string(ExperimentalFlags.tunIPv6Address.name)
+    var tunIPv6DNSAddress by configurationStore.string(ExperimentalFlags.tunIPv4DNSAddress.name)
+    var fakeDNSIPv4Pool by configurationStore.string(ExperimentalFlags.fakeDNSIPv4Pool.name)
+    var fakeDNSIPv4PoolSize by configurationStore.string(ExperimentalFlags.fakeDNSIPv4PoolSize.name)
+    var fakeDNSIPv6Pool by configurationStore.string(ExperimentalFlags.tunIPv6DNSAddress.name)
+    var fakeDNSIPv6PoolSize by configurationStore.string(ExperimentalFlags.fakeDNSIPv6PoolSize.name)
+    var tunIPv4RouteAddress by configurationStore.string(ExperimentalFlags.tunIPv4RouteAddress.name)
+    var tunIPv6RouteAddress by configurationStore.string(ExperimentalFlags.tunIPv6RouteAddress.name)
+    var discardIPv6BasedOnNetwork by configurationStore.boolean(ExperimentalFlags.discardIPv6BasedOnNetwork.name)
+    var tunBlockedUIDsOrPackageNames by configurationStore.string(ExperimentalFlags.tunBlockedUIDsOrPackageNames.name)
+    var overrideUTLSFingerprintForTLS by configurationStore.string(ExperimentalFlags.overrideUTLSFingerprintForTLS.name)
+    var overrideUTLSFingerprintForREALITY by configurationStore.string(ExperimentalFlags.overrideUTLSFingerprintForREALITY.name)
+    var lookupAsExchange by configurationStore.boolean(ExperimentalFlags.lookupAsExchange.name)
+    var directDNSDomainList by configurationStore.string(ExperimentalFlags.directDNSDomainList.name)
+    var remoteDNSDomainList by configurationStore.string(ExperimentalFlags.remoteDNSDomainList.name)
+    var enableProfileBackup by configurationStore.boolean(ExperimentalFlags.enableProfileBackup.name)
+    var setNavigationBarColor by configurationStore.boolean(ExperimentalFlags.setNavigationBarColor.name)
+    var disableShadowsocksPluginConfigActivity by configurationStore.boolean(ExperimentalFlags.disableShadowsocksPluginConfigActivity.name)
+
+    enum class ExperimentalFlags(val isBoolean: Boolean) {
+        singuot(true),
+        singmux(true),
+        singSnellUserKey(true),
+        useInternalV2RayPlugin(true),
+        useInternalObfsLocal(true),
+        tunIPv4Address(false),
+        tunIPv4DNSAddress(false),
+        tunIPv6Address(false),
+        tunIPv6DNSAddress(false),
+        fakeDNSIPv4Pool(false),
+        fakeDNSIPv4PoolSize(false),
+        fakeDNSIPv6Pool(false),
+        fakeDNSIPv6PoolSize(false),
+        tunIPv4RouteAddress(false),
+        tunIPv6RouteAddress(false),
+        discardIPv6BasedOnNetwork(true),
+        tunBlockedUIDsOrPackageNames(false),
+        overrideUTLSFingerprintForTLS(false),
+        overrideUTLSFingerprintForREALITY(false),
+        lookupAsExchange(true),
+        directDNSDomainList(false),
+        remoteDNSDomainList(false),
+        enableProfileBackup(true),
+        setNavigationBarColor(true),
+        disableShadowsocksPluginConfigActivity(true),
+    }
+
+    fun configureExperimentalFlags(str: String) {
+        val properties = Properties().apply {
+            try {
+                load(BufferedReader(StringReader(str)))
+            } catch (e: Exception) {
+                Logs.w(e)
+                return
+            }
+        }
+        for (key in enumEntries<ExperimentalFlags>()) {
+            if (key.name in properties.keys) {
+                if (key.isBoolean) {
+                    configurationStore.putBoolean(key.name, properties.getProperty(key.name) == "true")
+                } else {
+                    configurationStore.putString(key.name, properties.getProperty(key.name))
+                }
+            } else {
+                // these two also have their own entries in the settings; leave those alone
+                if (key == ExperimentalFlags.overrideUTLSFingerprintForTLS ||
+                    key == ExperimentalFlags.overrideUTLSFingerprintForREALITY) continue
+                if (key.isBoolean) {
+                    configurationStore.putBoolean(key.name, false)
+                } else {
+                    configurationStore.putString(key.name, "")
+                }
+            }
+        }
+    }
+
     override fun onPreferenceDataStoreChanged(store: PreferenceDataStore, key: String) {
         when (key) {
             Key.PROFILE_ID -> {}
@@ -537,8 +629,11 @@ object DataStore : OnPreferenceDataStoreChangeListener {
                 application.sendBroadcast(Intent(Action.THEME_CHANGED).setPackage(application.packageName))
             }
             Key.EXPERIMENTAL_FLAGS -> {
-                experimentalFlagsProperties = Properties().apply {
-                    load(BufferedReader(StringReader(experimentalFlags)))
+                configureExperimentalFlags(experimentalFlags)
+            }
+            Key.DISABLE_TOGGLE_SHORTCUT -> {
+                runOnDefaultDispatcher {
+                    SagerNet.setDynamicShortcuts(app)
                 }
             }
         }

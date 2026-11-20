@@ -54,6 +54,7 @@ public abstract class StandardV2RayBean extends AbstractBean {
     public String splithttpExtra;
     public String splithttpSessionIDTable;
     public String splithttpSessionIDLength;
+    public Boolean splithttpChromeParrot;
 
     public String certificates;
     public String pinnedPeerCertificateChainSha256;
@@ -128,6 +129,7 @@ public abstract class StandardV2RayBean extends AbstractBean {
         if (splithttpExtra == null) splithttpExtra = "";
         if (splithttpSessionIDTable == null) splithttpSessionIDTable = "";
         if (splithttpSessionIDLength == null) splithttpSessionIDLength = "";
+        if (splithttpChromeParrot == null) splithttpChromeParrot = false;
 
         if (security == null) security = "none";
         if (sni == null) sni = "";
@@ -183,7 +185,7 @@ public abstract class StandardV2RayBean extends AbstractBean {
 
     @Override
     public void serialize(ByteBufferOutput output) {
-        output.writeInt(40);
+        output.writeInt(41);
         super.serialize(output);
 
         output.writeString(uuid);
@@ -323,6 +325,7 @@ public abstract class StandardV2RayBean extends AbstractBean {
         output.writeString(serverNameToVerify);
         output.writeBoolean(hy2ChromeParrot);
         output.writeString(echQueryName);
+        output.writeBoolean(splithttpChromeParrot);
     }
 
     @Override
@@ -602,6 +605,9 @@ public abstract class StandardV2RayBean extends AbstractBean {
         if (version >= 39) {
             echQueryName = input.readString();
         }
+        if (version >= 41) {
+            splithttpChromeParrot = input.readBoolean();
+        }
     }
 
     @Override
@@ -667,6 +673,7 @@ public abstract class StandardV2RayBean extends AbstractBean {
         bean.singMuxMaxStreams = singMuxMaxStreams;
         bean.singMuxPadding = singMuxPadding;
         bean.hy2ChromeParrot = hy2ChromeParrot;
+        bean.splithttpChromeParrot = splithttpChromeParrot;
     }
 
     @Override

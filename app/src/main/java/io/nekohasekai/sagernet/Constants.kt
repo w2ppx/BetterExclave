@@ -26,6 +26,8 @@ object Key {
     const val DB_PUBLIC = "configuration.db"
     const val DB_PROFILE = "sager_net.db"
 
+    const val APP_VERSION_CODE = "appVersionCode"
+
     const val PERSIST_ACROSS_REBOOT = "isAutoConnect"
     const val APP_THEME = "appTheme"
     const val NIGHT_THEME = "nightTheme"
@@ -131,6 +133,8 @@ object Key {
     const val FAB_STYLE = "fabStyle"
     const val USE_IEC_UNIT = "useIECUnit"
     const val QUERY_ALL_PACKAGES_ALTERNATIVE_METHOD = "queryAllPackagesAlternativeMethod"
+    const val DISABLE_TOGGLE_SHORTCUT = "disableToggleShortcut"
+    const val DISABLE_TASKER_INTEGRATION = "disableTaskerIntegration"
 
     const val ENABLE_FRAGMENT = "enableFragment"
     const val ENABLE_FRAGMENT_FOR_DIRECT = "enableFragmentForDirect"
@@ -185,6 +189,7 @@ object Key {
     const val SERVER_WS_MAX_EARLY_DATA = "serverWsMaxEarlyData"
     const val SERVER_SPLITHTTP_MODE = "serverSplithttpMode"
     const val SERVER_SPLITHTTP_EXTRA = "serverSplithttpExtra"
+    const val SERVER_SPLITHTTP_CHROME_PARROT = "serverSplithttpChromeParrot"
     const val SERVER_WS_BROWSER_FORWARDING = "serverWsBrowserForwarding"
     const val SERVER_SH_BROWSER_FORWARDING = "serverShBrowserForwarding"
     const val SERVER_EARLY_DATA_HEADER_NAME = "serverEarlyDataHeaderName"

@@ -106,7 +106,7 @@
         },
         {
             "uniqueId": "androidx.databinding:viewbinding",
-            "artifactVersion": "9.5.0"
+            "artifactVersion": "9.5.1"
         },
         {
             "uniqueId": "androidx.drawerlayout:drawerlayout",
@@ -382,15 +382,15 @@
         },
         {
             "uniqueId": "org.bouncycastle:bcpkix-jdk18on",
-            "artifactVersion": "1.86"
+            "artifactVersion": "1.87"
         },
         {
             "uniqueId": "org.bouncycastle:bcprov-jdk18on",
-            "artifactVersion": "1.86"
+            "artifactVersion": "1.87"
         },
         {
             "uniqueId": "org.bouncycastle:bcutil-jdk18on",
-            "artifactVersion": "1.86"
+            "artifactVersion": "1.87"
         },
         {
             "uniqueId": "org.jetbrains.kotlin:kotlin-bom",

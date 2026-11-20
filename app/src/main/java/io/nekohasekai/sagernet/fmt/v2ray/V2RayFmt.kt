@@ -247,12 +247,12 @@ fun parseV2Ray(link: String): StandardV2RayBean {
                 bean.sni = it
             }
             url.queryParameter("pbk")?.let {
-                try {
-                    require(Base64.UrlSafe.withPadding(Base64.PaddingOption.ABSENT).decode(it).size == 32)
-                } catch (_: Exception) {
-                    throw IllegalArgumentException("invalid pbk")
-                }
                 bean.realityPublicKey = it
+            }
+            try {
+                require(Base64.UrlSafe.withPadding(Base64.PaddingOption.ABSENT).decode(bean.realityPublicKey).size == 32)
+            } catch (_: Exception) {
+                throw IllegalArgumentException("invalid pbk")
             }
             url.queryParameter("sid")?.let {
                 try {
@@ -976,11 +976,10 @@ fun StandardV2RayBean.toUri(): String? {
                 // bad format from where?
                 builder.addQueryParameter("allowInsecure", "1")
             }
-            if (pinnedPeerCertificateSha256.isNotEmpty()) {
-                val hashes = pinnedPeerCertificateSha256.listByLineOrComma()
-                for (hash in hashes) {
+            pinnedPeerCertificateSha256.listByLineOrComma().takeIf { it.isNotEmpty() }?.also { hashes ->
+                hashes.forEach {
                     try {
-                        require(hash.hexToByteArray().size == 32)
+                        require(it.hexToByteArray().size == 32)
                     } catch (_: Exception) {
                         throw IllegalArgumentException("invalid pcs")
                     }

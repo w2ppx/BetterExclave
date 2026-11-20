@@ -33,10 +33,7 @@ import java.io.StringWriter
 import java.security.cert.CertificateFactory
 import kotlin.io.encoding.Base64
 
-// https://github.com/TrustTunnel/TrustTunnel/blob/8856e7ba83ae0c9faace78aaf9a95b1b291cd3ed/DEEP_LINK.md
-// https://github.com/TrustTunnel/TrustTunnel/blob/8ba8f34da84b54ff49c248ec8c940c38010b511e/DEEP_LINK.md
-// https://github.com/TrustTunnel/TrustTunnel/blob/9e144fe4bcd0c2cf8f6690a97ba9b4df571a8ec0/DEEP_LINK.md
-// https://github.com/TrustTunnel/TrustTunnel/blob/3470404b7fca8187772b57c6641a0c571e0c165f/DEEP_LINK.md
+// https://github.com/TrustTunnel/TrustTunnel/blob/616e9ab714c0fcf7d6ccc4e57fe480a22913de87/DEEP_LINK.md
 
 private enum class Tag(val code: Long) {
     Version(0x00),
@@ -55,6 +52,7 @@ private enum class Tag(val code: Long) {
     DNSUptreams(0x0D),
     SubscriptionURL(0x0E),
     ClientRandomAuthKey(0x0F),
+    TLSProfile(0x10),
 }
 
 private enum class Version(val code: Byte) {
@@ -87,6 +85,7 @@ private enum class AntiDPI(val code: Byte) {
 private data class TLV(
     val tag: Long,
     val value: ByteArray,
+    val size: Int,
 )
 
 fun TrustTunnelBean.toUri(): String {
@@ -163,20 +162,9 @@ fun parseTrustTunnel(url: String): List<TrustTunnelBean> {
         var offset = 0
         while (offset < data.size) {
             val tlv = data.readTLV(offset)
-            val tag = tlv.tag
             val length = tlv.value.size
             val value = tlv.value
-            offset += when {
-                tag < 64 -> 1
-                tag < 16384 -> 2
-                tag < 1073741824 -> 4
-                else -> 8
-            } + when {
-                length < 64 -> 1
-                length < 16384 -> 2
-                length < 1073741824 -> 4
-                else -> 8
-            } + length
+            offset += tlv.size
             when (tlv.tag) {
                 Tag.Version.code -> {
                     require(length == 1) { "invalid Version" }
@@ -252,6 +240,9 @@ fun parseTrustTunnel(url: String): List<TrustTunnelBean> {
                 }
                 Tag.ClientRandomAuthKey.code -> {
                     error("client random auth key unsupported")
+                }
+                Tag.TLSProfile.code -> {
+                    // similar to uTLS fingerprint, ignored
                 }
                 else -> {
                     // "A parser MUST ignore unknown tags to allow forward-compatible extensions."
@@ -340,64 +331,29 @@ private fun ByteArrayOutputStream.writeUVarInt(i: Long) {
 }
 
 private fun ByteArray.readTLV(offset: Int = 0): TLV {
-    try {
-        var newOffset = offset
-        val tag = readUVarInt(offset)
-        newOffset += when {
-            tag < 64 -> 1
-            tag < 16384 -> 2
-            tag < 1073741824 -> 4
-            else -> 8
-        }
-        val length = readUVarInt(newOffset)
-        require(length < Int.MAX_VALUE)
-        newOffset += when {
-            length < 64 -> 1
-            length < 16384 -> 2
-            length < 1073741824 -> 4
-            else -> 8
-        }
-        val value = copyOfRange(newOffset, newOffset+length.toInt())
-        return TLV(
-            tag = tag,
-            value = value,
-        )
-    } catch (e: Exception) {
-        throw e
-    }
+    // QUIC varints may use a non-minimal encoding, so the consumed size must be
+    // derived from the 2-bit prefix instead of the decoded value.
+    val (tag, tagSize) = readUVarInt(offset)
+    val (length, lengthSize) = readUVarInt(offset + tagSize)
+    require(length <= Int.MAX_VALUE - offset - tagSize - lengthSize) { "invalid TLV length" }
+    val valueOffset = offset + tagSize + lengthSize
+    val value = copyOfRange(valueOffset, valueOffset + length.toInt())
+    return TLV(
+        tag = tag,
+        value = value,
+        size = tagSize + lengthSize + length.toInt(),
+    )
 }
 
-private fun ByteArray.readUVarInt(offset: Int = 0): Long {
-    try {
-        val first = this[offset].toInt() and 0xFF
-        val prefix = first shr 6
-        require(prefix in 0x00..0x03)
-        when (prefix) {
-            0x00 -> {
-                return (first and 0x3F).toLong()
-            }
-            0x01 -> {
-                val b1 = this[offset + 1].toInt() and 0xFF
-                return ((first and 0x3F) shl 8 or b1).toLong()
-            }
-            0x02 -> {
-                val b1 = this[offset + 1].toInt() and 0xFF
-                val b2 = this[offset + 2].toInt() and 0xFF
-                val b3 = this[offset + 3].toInt() and 0xFF
-                return ((first and 0x3F).toLong() shl 24) or
-                        (b1.toLong() shl 16) or
-                        (b2.toLong() shl 8) or
-                        b3.toLong()
-            }
-            else -> {
-                var value = (first and 0x3F).toLong() shl 56
-                for (i in 1..7) {
-                    value = value or ((this[offset + i].toInt() and 0xFF).toLong() shl (56 - 8 * i))
-                }
-                return value
-            }
-        }
-    } catch (e: Exception) {
-        throw e
+/**
+ * Reads a QUIC variable-length integer, returning the value and the number of bytes consumed.
+ */
+private fun ByteArray.readUVarInt(offset: Int = 0): Pair<Long, Int> {
+    val first = this[offset].toInt() and 0xFF
+    val size = 1 shl (first shr 6)
+    var value = (first and 0x3F).toLong()
+    for (i in 1 until size) {
+        value = (value shl 8) or (this[offset + i].toLong() and 0xFF)
     }
+    return value to size
 }

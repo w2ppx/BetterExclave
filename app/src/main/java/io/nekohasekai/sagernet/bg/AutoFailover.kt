@@ -81,7 +81,7 @@ object AutoFailover {
      */
     suspend fun ping(profile: ProxyEntity, vpnRunning: Boolean = SagerNet.started && DataStore.startedProfile > 0): Int {
         val protectPath = if (vpnRunning && DataStore.tunImplementation == TunImplementation.SYSTEM && DataStore.serviceMode == Key.MODE_VPN) {
-            SagerNet.application.cacheDir.toString() + "/protect_path"
+            SagerNet.deviceStorage.noBackupFilesDir.toString() + "/protect_path"
         } else ""
         return try {
             V2RayTestInstance(profile, DataStore.connectionTestURL, DataStore.connectionTestTimeout.coerceIn(1, 30) * 1000, protectPath)
