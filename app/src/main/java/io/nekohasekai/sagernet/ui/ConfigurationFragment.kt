@@ -914,7 +914,8 @@ class ConfigurationFragment @JvmOverloads constructor(
 
                         try {
                             if (profile.type == ProxyEntity.TYPE_BALANCER) {
-                                val members = profile.balancerBean?.proxies
+                                // the fallbackTag proxy keeps a balancer usable as well
+                                val members = profile.balancerBean?.listMemberIds()
                                     ?.let { SagerDatabase.proxyDao.getEntities(it) }
                                     .orEmpty()
                                 val bestPing = coroutineScope {

@@ -55,6 +55,11 @@ public abstract class AbstractBean extends Serializable {
     public int extraType;
     public String profileId;
     public String profileRoutingRules;
+    /**
+     * The profile's own {@code dns.hosts}, as a JSON object of domain to address or address
+     * list, empty when it has none. Merged under the user's hosts when the config is built.
+     */
+    public String profileDnsHosts;
 
     public String displayName() {
         if (!name.isEmpty()) {
@@ -87,6 +92,7 @@ public abstract class AbstractBean extends Serializable {
 
         if (profileId == null) profileId = "";
         if (profileRoutingRules == null) profileRoutingRules = "";
+        if (profileDnsHosts == null) profileDnsHosts = "";
     }
 
 
@@ -95,7 +101,7 @@ public abstract class AbstractBean extends Serializable {
     @Override
     public void serializeToBuffer(@NonNull ByteBufferOutput output) {
         serialize(output);
-        output.writeInt(3);
+        output.writeInt(4);
         if (!serializeWithoutName) {
             output.writeString(name);
         }
@@ -104,13 +110,14 @@ public abstract class AbstractBean extends Serializable {
             output.writeString(profileId);
         }
         output.writeString(profileRoutingRules);
+        output.writeString(profileDnsHosts);
     }
 
     @Override
     public void deserializeFromBuffer(@NonNull ByteBufferInput input) {
         deserialize(input);
         int extraVersion = input.readInt();
-        if (extraVersion < 0 || extraVersion > 3) {
+        if (extraVersion < 0 || extraVersion > 4) {
             // Never written out of this range: the stream is misaligned, fail before reading
             // a bogus string length out of it.
             throw new KryoException("invalid extra version " + extraVersion);
@@ -130,6 +137,9 @@ public abstract class AbstractBean extends Serializable {
         }
         if (extraVersion >= 3) {
             profileRoutingRules = input.readString();
+        }
+        if (extraVersion >= 4) {
+            profileDnsHosts = input.readString();
         }
     }
 

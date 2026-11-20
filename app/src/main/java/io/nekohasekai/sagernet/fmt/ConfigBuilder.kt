@@ -203,7 +203,7 @@ fun buildV2RayConfig(
     fun ProxyEntity.resolveChain(): MutableList<ProxyEntity> {
         if (type == ProxyEntity.TYPE_BALANCER) {
             val beans = if (balancerBean!!.type == BalancerBean.TYPE_LIST) {
-                SagerDatabase.proxyDao.getEntities(balancerBean!!.proxies)
+                SagerDatabase.proxyDao.getEntities(balancerBean!!.listMemberIds())
             } else {
                 SagerDatabase.proxyDao.getByGroup(balancerBean!!.groupId)
                     .filter { if (balancerBean!!.nameFilter.isEmpty()) { true } else { !Regex(balancerBean!!.nameFilter).containsMatchIn(it.requireBean().name) } }
@@ -211,10 +211,18 @@ fun buildV2RayConfig(
             }
             val beansMap = beans.associateBy { it.id }
             val beanList = ArrayList<ProxyEntity>()
+            // the database returns IN (...) rows in no particular order; a list balancer's order
+            // matters to the fallback strategy, so follow the stored member order
+            // (the fallbackTag proxy, if any, comes last)
+            val orderedIds = if (balancerBean!!.type == BalancerBean.TYPE_LIST) {
+                balancerBean!!.listMemberIds().filter { it in beansMap }
+            } else {
+                beansMap.keys.toList()
+            }
 
             // For balancer, we don't add landing proxy here
             // It will be handled in buildChain() function
-            for (proxyId in beansMap.keys) {
+            for (proxyId in orderedIds) {
                 val item = beansMap[proxyId] ?: continue
                 if (item.id == id) continue
                 when (item.type) {
@@ -327,6 +335,16 @@ fun buildV2RayConfig(
                     }
                 }
             }
+            // hosts imported with the profiles in use, e.g. the static addresses of an Xray
+            // JSON subscription's servers; the user's own hosts above take precedence
+            val profileHosts = mutableMapOf<String, DnsObject.StringOrListObject>().also { merged ->
+                hosts?.let { merged.putAll(it) }
+                val profileBeans = sequenceOf(proxy) + proxies.asSequence() + extraProxies.values.asSequence().flatten()
+                for (entity in profileBeans.distinctBy { it.id }) {
+                    mergeProfileDnsHosts(merged, entity.requireBean().profileDnsHosts.orEmpty())
+                }
+            }
+            if (profileHosts.isNotEmpty()) hosts = profileHosts
             servers = mutableListOf()
             fallbackStrategy = "disabledIfAnyMatch"
         }
@@ -2287,6 +2305,23 @@ fun buildV2RayConfig(
                     }
                 }
 
+                // A list balancer's fallbackTag proxy is built like a member (resolveChain puts it
+                // last) but is not a candidate: the core routes to it only when the strategy
+                // has nothing alive to pick.
+                val fallbackProxyId = balancerBean.fallbackProxy.takeIf {
+                    balancerBean.type == BalancerBean.TYPE_LIST && it > 0 && it !in balancerBean.proxies
+                }
+                val fallbackOutboundTag = fallbackProxyId
+                    ?.takeIf { id -> profileList.any { it.id == id } }
+                    ?.let { "$TAG_AGENT-global-$it" }
+                val memberTags = if (balancerBean.type == BalancerBean.TYPE_LIST) {
+                    // members whose global outbound was already built for another chain are not
+                    // in chainOutbounds, but the outbound exists under this tag all the same
+                    profileList.filter { it.id != fallbackProxyId }.map { "$TAG_AGENT-global-${it.id}" }
+                } else {
+                    chainOutbounds.map { it.tag }
+                }
+
                 val observatory = ObservatoryObject().apply {
                     probeURL = balancerBean.probeUrl.ifEmpty {
                         DataStore.connectionTestURL
@@ -2295,7 +2330,8 @@ fun buildV2RayConfig(
                         probeInterval = "${balancerBean.probeInterval}s"
                     }
                     enableConcurrency = true
-                    subjectSelector = HashSet(chainOutbounds.map { it.tag })
+                    // probe the fallbackTag outbound too, so its status is shown like the members'
+                    subjectSelector = HashSet(memberTags + listOfNotNull(fallbackOutboundTag))
                 }
                 val observatoryItem = MultiObservatoryObject.MultiObservatoryItem().apply {
                     tag = "observer-$tagOutbound"
@@ -2313,7 +2349,8 @@ fun buildV2RayConfig(
                 if (routing.balancers == null) routing.balancers = ArrayList()
                 routing.balancers.add(RoutingObject.BalancerObject().apply {
                     tag = "balancer-$tagOutbound"
-                    selector = chainOutbounds.map { it.tag }
+                    selector = memberTags
+                    fallbackTag = fallbackOutboundTag
                     if (multiObservatory == null) {
                         multiObservatory = MultiObservatoryObject().apply {
                             observers = mutableListOf()
@@ -2322,7 +2359,7 @@ fun buildV2RayConfig(
                     strategy = StrategyObject().apply {
                         type = balancerBean.strategy.takeIf { it.isNotEmpty() } ?: "random"
                         when (type) {
-                            "leastPing", "leastLoad" -> {
+                            "leastPing", "leastLoad", "fallback" -> {
                                 settings = StrategyObject.strategyConfig().apply {
                                     observerTag = "observer-$tagOutbound"
                                 }

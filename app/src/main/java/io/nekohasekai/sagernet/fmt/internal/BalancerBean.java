@@ -47,6 +47,11 @@ public class BalancerBean extends InternalBean {
     public String nameFilter1;
     public Boolean useLandingProxy;
     public Boolean useFrontProxy;
+    /**
+     * A list balancer's fallbackTag: the proxy used only once none of {@link #proxies} can be
+     * picked. It is not a balancing candidate itself. 0 when unset.
+     */
+    public Long fallbackProxy;
 
     @Override
     public void initializeDefaultValues() {
@@ -62,6 +67,22 @@ public class BalancerBean extends InternalBean {
         if (nameFilter1 == null) nameFilter1 = "";
         if (useLandingProxy == null) useLandingProxy = false;
         if (useFrontProxy == null) useFrontProxy = false;
+        if (fallbackProxy == null) fallbackProxy = 0L;
+    }
+
+    /**
+     * A list balancer's proxies in order, followed by its {@link #fallbackProxy} when that is
+     * set and not already a member.
+     */
+    public List<Long> listMemberIds() {
+        List<Long> ids = new ArrayList<>();
+        for (Long id : proxies) {
+            if (!ids.contains(id)) ids.add(id);
+        }
+        if (fallbackProxy != null && fallbackProxy > 0 && !ids.contains(fallbackProxy)) {
+            ids.add(fallbackProxy);
+        }
+        return ids;
     }
 
     @Override
@@ -75,7 +96,7 @@ public class BalancerBean extends InternalBean {
 
     @Override
     public void serialize(ByteBufferOutput output) {
-        output.writeInt(5);
+        output.writeInt(6);
         output.writeInt(type);
         output.writeString(strategy);
         switch (type) {
@@ -100,6 +121,7 @@ public class BalancerBean extends InternalBean {
             output.writeBoolean(useLandingProxy);
             output.writeBoolean(useFrontProxy);
         }
+        output.writeLong(fallbackProxy);
     }
 
     @Override
@@ -137,6 +159,9 @@ public class BalancerBean extends InternalBean {
         if (version >= 5 && type == TYPE_GROUP) {
             useFrontProxy = input.readBoolean();
         }
+        if (version >= 6) {
+            fallbackProxy = input.readLong();
+        }
     }
 
     @NonNull
@@ -160,7 +185,7 @@ public class BalancerBean extends InternalBean {
 
     @Override
     public boolean isInsecure() {
-        List<ProxyEntity> proxyEntities = SagerDatabase.Companion.getProxyDao().getEntities(proxies);
+        List<ProxyEntity> proxyEntities = SagerDatabase.Companion.getProxyDao().getEntities(listMemberIds());
         if (proxyEntities.isEmpty()) {
             return false;
         }

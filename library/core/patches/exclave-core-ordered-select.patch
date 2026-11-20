@@ -1,0 +1,56 @@
+--- a/app/proxyman/outbound/outbound.go
++++ b/app/proxyman/outbound/outbound.go
+@@ -4,6 +4,7 @@
+ 
+ import (
+ 	"context"
++	"sort"
+ 	"strings"
+ 	"sync"
+ 
+@@ -151,21 +152,29 @@
+ 	m.access.RLock()
+ 	defer m.access.RUnlock()
+ 
++	// Order the result by the first selector each tag matches, then by tag, so that
++	// order-sensitive strategies (fallback) and the first-tag default are deterministic
++	// instead of following Go map iteration order.
++	rank := make(map[string]int)
+ 	tags := make([]string, 0, len(selectors))
+ 
+ 	for tag := range m.taggedHandler {
+-		match := false
+-		for _, selector := range selectors {
++		for i, selector := range selectors {
+ 			if strings.HasPrefix(tag, selector) {
+-				match = true
++				rank[tag] = i
++				tags = append(tags, tag)
+ 				break
+ 			}
+ 		}
+-		if match {
+-			tags = append(tags, tag)
+-		}
+ 	}
+ 
++	sort.Slice(tags, func(i, j int) bool {
++		if rank[tags[i]] != rank[tags[j]] {
++			return rank[tags[i]] < rank[tags[j]]
++		}
++		return tags[i] < tags[j]
++	})
++
+ 	return tags
+ }
+ 
+--- a/app/router/strategy_fallback.go
++++ b/app/router/strategy_fallback.go
+@@ -49,7 +49,6 @@
+ 	for _, outbound := range outboundsList {
+ 		for _, v := range status {
+ 			if outbound == v.OutboundTag && v.Alive {
+-				println(outbound)
+ 				return outbound
+ 			}
+ 		}

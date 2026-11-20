@@ -70,7 +70,8 @@ class BalancerSettingsActivity : ProfileSettingsActivity<BalancerBean>(R.layout.
     override fun BalancerBean.init() {
         DataStore.profileName = name
         DataStore.balancerType = type
-        DataStore.balancerStrategy = strategy
+        // imports used to store "random" explicitly; the strategy list spells it ""
+        DataStore.balancerStrategy = strategy.takeUnless { it == "random" } ?: ""
         DataStore.balancerGroup = groupId
         DataStore.serverProtocol = proxies.joinToString(",")
         DataStore.balancerProbeUrl = probeUrl

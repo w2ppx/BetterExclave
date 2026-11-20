@@ -33,6 +33,8 @@ import io.nekohasekai.sagernet.database.ProxyGroup
 import io.nekohasekai.sagernet.database.SagerDatabase
 import io.nekohasekai.sagernet.database.SubscriptionBean
 import io.nekohasekai.sagernet.fmt.AbstractBean
+import io.nekohasekai.sagernet.fmt.extractXrayDnsHosts
+import io.nekohasekai.sagernet.fmt.extractXrayProbeSettings
 import io.nekohasekai.sagernet.fmt.internal.BalancerBean
 import io.nekohasekai.sagernet.fmt.shadowsocks.parseShadowsocksConfig
 import io.nekohasekai.sagernet.fmt.wireguard.parseWireGuardConfig
@@ -60,6 +62,13 @@ object RawUpdater : GroupUpdater() {
         val allEntryBeans: List<AbstractBean>,
         val strategy: String,
         val routingRules: String,
+        // From the profile's observatory (or burstObservatory); null keeps the balancer's own setting.
+        val probeUrl: String? = null,
+        val probeInterval: Int? = null,
+        // The balancer's fallbackTag when it is not one of memberBeans: routed to only once
+        // no member can be picked.
+        val fallbackBean: AbstractBean? = null,
+        val dnsHosts: String = "",
     )
 
     private val pendingBalancers = ThreadLocal.withInitial { mutableListOf<BalancerSpec>() }
@@ -367,11 +376,18 @@ object RawUpdater : GroupUpdater() {
                 val balancersToAdd = ArrayList<ProxyEntity>()
                 for ((spec, memberEntities, memberIds) in validBalancerSpecs) {
                     val strategy = when (spec.strategy.lowercase()) {
-                        "leastload", "leastping" -> spec.strategy
-                        "random" -> "random"
-                        "roundrobin", "round-robin" -> "roundRobin"
-                        else -> "random"
+                        "leastload" -> "leastLoad"
+                        "leastping" -> "leastPing"
+                        "fallback" -> "fallback"
+                        // "" is random, as in the balancer settings; the core has no roundRobin
+                        // strategy and random is the closest it supports
+                        else -> ""
                     }
+                    val probeUrl = spec.probeUrl
+                    val probeInterval = spec.probeInterval
+                    val fallbackProxy = spec.fallbackBean
+                        ?.let { currentProxyByName[it.displayName()]?.id }
+                        ?.takeIf { it !in memberIds } ?: 0L
                     val targetOrder = memberEntities.minOf { it.userOrder }
                     val existing = balancerEntitiesByName[balancerKey(spec.name)]
                     if (existing != null) {
@@ -381,7 +397,11 @@ object RawUpdater : GroupUpdater() {
                                 current.name != spec.name ||
                                 current.strategy != strategy ||
                                 current.proxies != memberIds ||
+                                (probeUrl != null && current.probeUrl != probeUrl) ||
+                                (probeInterval != null && current.probeInterval != probeInterval) ||
                                 current.profileRoutingRules != spec.routingRules ||
+                                current.profileDnsHosts != spec.dnsHosts ||
+                                current.fallbackProxy != fallbackProxy ||
                                 existing.userOrder != targetOrder
                         if (needsUpdate) {
                             val bb = current ?: BalancerBean().apply {
@@ -391,6 +411,10 @@ object RawUpdater : GroupUpdater() {
                             bb.strategy = strategy
                             bb.proxies = memberIds
                             bb.profileRoutingRules = spec.routingRules
+                            bb.profileDnsHosts = spec.dnsHosts
+                            bb.fallbackProxy = fallbackProxy
+                            probeUrl?.let { bb.probeUrl = it }
+                            probeInterval?.let { bb.probeInterval = it }
                             bb.initializeDefaultValues()
                             existing.putBean(bb)
                             existing.userOrder = targetOrder
@@ -403,6 +427,10 @@ object RawUpdater : GroupUpdater() {
                             this.proxies = memberIds
                             this.strategy = strategy
                             this.profileRoutingRules = spec.routingRules
+                            this.profileDnsHosts = spec.dnsHosts
+                            this.fallbackProxy = fallbackProxy
+                            probeUrl?.let { this.probeUrl = it }
+                            probeInterval?.let { this.probeInterval = it }
                             initializeDefaultValues()
                         }
                         balancersToAdd.add(ProxyEntity(
@@ -497,6 +525,7 @@ object RawUpdater : GroupUpdater() {
                 val obj = entry.asJsonObject
                 val prefix = (obj.getString("remarks", ignoreCase = true) ?: "").trim()
                 val profileRoutingRules = extractRoutingRules(obj)
+                val profileDnsHosts = extractXrayDnsHosts(obj)
 
                 val outboundsArr = obj.getArray("outbounds", ignoreCase = true) ?: return@forEach
                 val proxyOutbounds = outboundsArr.filter { ob ->
@@ -518,6 +547,7 @@ object RawUpdater : GroupUpdater() {
                             else -> bean.displayName()
                         }
                         bean.profileRoutingRules = profileRoutingRules
+                        bean.profileDnsHosts = profileDnsHosts
                         entryBeans.add(tag to bean)
                         beans.add(bean)
                     }
@@ -526,11 +556,12 @@ object RawUpdater : GroupUpdater() {
                 val balancers = obj.getObject("routing")?.getArray("balancers") ?: return@forEach
                 protectBalancerEntryBeans(entryBeans.map { (_, bean) -> bean })
                 val multipleBalancers = balancers.size >= 2
+                val (probeUrl, probeInterval) = extractXrayProbeSettings(obj)
                 balancers.forEach { b ->
                     val selector = b.getStringArray("selector").orEmpty()
                     val fallbackTag = b.getString("fallbackTag")?.trim().orEmpty()
                     if (selector.isEmpty() && fallbackTag.isEmpty()) return@forEach
-                    val strategy = b.getObject("strategy")?.getString("type") ?: "random"
+                    var strategy = b.getObject("strategy")?.getString("type") ?: "random"
                     val memberBeans = ArrayList<AbstractBean>()
                     for ((tag, bean) in entryBeans) {
                         if (selector.any { p -> tag.startsWith(p) } && memberBeans.none { it === bean }) {
@@ -538,15 +569,19 @@ object RawUpdater : GroupUpdater() {
                         }
                     }
                     // The core keeps fallbackTag out of the candidate pool entirely and only routes
-                    // to it once a balancer has nothing left to pick, so it is not a member here
-                    // either. Pull it in only when the balancer would otherwise be thrown away for
-                    // having fewer than two members -- a degraded balancer still beats no balancer.
-                    if (memberBeans.size < 2 && fallbackTag.isNotEmpty()) {
-                        for ((tag, bean) in entryBeans) {
-                            if (tag == fallbackTag && memberBeans.none { it === bean }) {
-                                memberBeans.add(bean)
-                            }
-                        }
+                    // to it once a balancer has nothing left to pick, so it is kept apart from the
+                    // members and carried over as the balancer's fallbackTag.
+                    var fallbackBean = if (fallbackTag.isEmpty()) null else entryBeans
+                        .firstOrNull { (tag, bean) -> tag == fallbackTag && memberBeans.none { it === bean } }
+                        ?.second
+                    // One primary plus fallbackTag would be thrown away for having fewer than two
+                    // members. Make it an active/backup pair instead: keep the order and let the
+                    // core's fallback strategy pick the first alive member, so the backup is used
+                    // only while the primary is dead.
+                    if (memberBeans.size < 2 && fallbackBean != null) {
+                        memberBeans.add(fallbackBean)
+                        fallbackBean = null
+                        if (memberBeans.size == 2) strategy = "fallback"
                     }
                     if (memberBeans.size >= 2) {
                         val tagName = b.getString("tag")?.trim().orEmpty()
@@ -565,6 +600,10 @@ object RawUpdater : GroupUpdater() {
                             allEntryBeans = entryBeans.map { (_, bean) -> bean },
                             strategy = strategy,
                             routingRules = profileRoutingRules,
+                            probeUrl = probeUrl,
+                            probeInterval = probeInterval,
+                            fallbackBean = fallbackBean,
+                            dnsHosts = profileDnsHosts,
                         ))
                     }
                 }
@@ -611,10 +650,12 @@ object RawUpdater : GroupUpdater() {
                 if (isV2Ray) {
                     // V2Ray JSONv4 or V2Ray JSONv5
                     val profileRoutingRules = extractRoutingRules(jsonObject)
+                    val profileDnsHosts = extractXrayDnsHosts(jsonObject)
                     outbounds.forEach {
                         beans.addAll((parseV2Ray5Outbound(it).takeIf { it.isNotEmpty() }
                             ?: parseV2RayOutbound(it)).onEach { bean ->
                             bean.profileRoutingRules = profileRoutingRules
+                            bean.profileDnsHosts = profileDnsHosts
                         })
                     }
                     return beans

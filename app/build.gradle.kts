@@ -10,6 +10,9 @@ setupApp()
 
 android {
     namespace = "io.nekohasekai.sagernet"
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 ksp {
@@ -75,6 +78,7 @@ dependencies {
     implementation(libs.editorkit.language.json)
     implementation(libs.maxmind.db)
     coreLibraryDesugaring(libs.desugar.jdk.libs)
+    testImplementation("junit:junit:4.13.2")
 
     "legacyImplementation"(libs.core.ktx.minSdk21)
     "legacyImplementation"(libs.activity.ktx.minSdk21)

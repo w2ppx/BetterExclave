@@ -1,0 +1,384 @@
+--- a/app/observatory/observer.go
++++ b/app/observatory/observer.go
+@@ -43,7 +43,22 @@
+ }
+ 
+ func (o *Observer) GetObservation(ctx context.Context) (proto.Message, error) {
+-	return &ObservationResult{Status: o.status}, nil
++	o.statusLock.Lock()
++	defer o.statusLock.Unlock()
++	// updateStatusForResult appends to o.status and mutates its entries in place, so hand
++	// out a snapshot instead of the live slice and pointers.
++	status := make([]*OutboundStatus, 0, len(o.status))
++	for _, v := range o.status {
++		status = append(status, copyOutboundStatus(v))
++	}
++	return &ObservationResult{Status: status}, nil
++}
++
++func copyOutboundStatus(v *OutboundStatus) *OutboundStatus {
++	if v == nil {
++		return nil
++	}
++	return proto.Clone(v).(*OutboundStatus)
+ }
+ 
+ func (o *Observer) Type() interface{} {
+@@ -134,6 +149,9 @@
+ 				case <-time.After(sleepTime):
+ 				}
+ 			}
++			// the sequential pass already slept between probes; do not run the
++			// concurrent pass below as well
++			continue
+ 		}
+ 
+ 		ch := make(chan struct{}, len(outbounds))
+@@ -287,6 +305,8 @@
+ 		newError("failed to load outbound status").Base(err).WriteToLog()
+ 		return
+ 	}
++	o.statusLock.Lock()
++	defer o.statusLock.Unlock()
+ 	o.status = append(o.status, status)
+ }
+ 
+--- a/app/router/config.go
++++ b/app/router/config.go
+@@ -144,7 +144,7 @@
+ 		return &Balancer{
+ 			selectors: br.OutboundSelector,
+ 			strategy:  &FallbackStrategy{config: s},
+-			ohm:       ohm,
++			ohm:       ohm, fallbackTag: br.FallbackTag,
+ 		}, nil
+ 	case "leastload":
+ 		i, err := serial.GetInstanceOf(br.StrategySettings)
+--- a/app/observatory/observer_race_test.go
++++ b/app/observatory/observer_race_test.go
+@@ -0,0 +1,132 @@
++package observatory
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"sync"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/exclavenetwork/exclave-core/v5/common/net"
++	"github.com/exclavenetwork/exclave-core/v5/features/outbound"
++	"github.com/exclavenetwork/exclave-core/v5/transport/internet/tagged"
++)
++
++func TestGetObservationIsRaceFreeSnapshot(t *testing.T) {
++	o := &Observer{config: &Config{}, ctx: context.Background()}
++
++	var wg sync.WaitGroup
++	stop := make(chan struct{})
++	for w := 0; w < 4; w++ {
++		wg.Add(1)
++		go func(w int) {
++			defer wg.Done()
++			for i := 0; ; i++ {
++				select {
++				case <-stop:
++					return
++				default:
++				}
++				o.updateStatusForResult(fmt.Sprintf("out-%d", (w*7+i)%16), &ProbeResult{Alive: i%2 == 0, Delay: int64(i)})
++			}
++		}(w)
++	}
++	for i := 0; i < 2000; i++ {
++		msg, err := o.GetObservation(context.Background())
++		if err != nil {
++			t.Fatal(err)
++		}
++		for _, s := range msg.(*ObservationResult).Status {
++			_ = s.Alive
++			_ = s.Delay
++			_ = s.OutboundTag
++			_ = s.LastErrorReason
++		}
++	}
++	close(stop)
++	wg.Wait()
++
++	// mutating the returned snapshot must not touch the observer's state
++	o.updateStatusForResult("x", &ProbeResult{Alive: true, Delay: 5})
++	snap, _ := o.GetObservation(context.Background())
++	for _, s := range snap.(*ObservationResult).Status {
++		s.Alive = false
++		s.Delay = -1
++	}
++	again, _ := o.GetObservation(context.Background())
++	for _, s := range again.(*ObservationResult).Status {
++		if s.OutboundTag == "x" && (!s.Alive || s.Delay != 5) {
++			t.Fatalf("observer state was changed through a snapshot: %+v", s)
++		}
++	}
++}
++
++type staticSelector struct {
++	outbound.Manager
++	tags []string
++}
++
++func (s *staticSelector) Select([]string) []string { return s.tags }
++
++// With EnableConcurrency=false the outbounds must be probed one at a time, each probe
++// followed by ProbeInterval, without an extra concurrent burst of probes afterwards.
++func TestSequentialProbingDoesNotFallThroughToConcurrent(t *testing.T) {
++	const interval = 40 * time.Millisecond
++
++	var mu sync.Mutex
++	var starts []time.Time
++	var inflight, maxInflight int32
++	oldDialer := tagged.Dialer
++	tagged.Dialer = func(ctx context.Context, dest net.Destination, tag string) (net.Conn, error) {
++		n := atomic.AddInt32(&inflight, 1)
++		defer atomic.AddInt32(&inflight, -1)
++		for {
++			m := atomic.LoadInt32(&maxInflight)
++			if n <= m || atomic.CompareAndSwapInt32(&maxInflight, m, n) {
++				break
++			}
++		}
++		mu.Lock()
++		starts = append(starts, time.Now())
++		mu.Unlock()
++		time.Sleep(2 * time.Millisecond)
++		return nil, errors.New("test dialer")
++	}
++	defer func() { tagged.Dialer = oldDialer }()
++
++	o := &Observer{
++		config: &Config{
++			SubjectSelector:   []string{"o"},
++			ProbeUrl:          "http://probe.invalid/",
++			ProbeInterval:     int64(interval),
++			EnableConcurrency: false,
++		},
++		ctx: context.Background(),
++		ohm: &staticSelector{tags: []string{"o1", "o2", "o3"}},
++	}
++	ctx, cancel := context.WithCancel(context.Background())
++	done := make(chan struct{})
++	go func() { o.background(ctx); close(done) }()
++	time.Sleep(interval*8 + interval/2)
++	cancel()
++	<-done
++
++	mu.Lock()
++	defer mu.Unlock()
++	if len(starts) < 4 {
++		t.Fatalf("only %d probes ran", len(starts))
++	}
++	if m := atomic.LoadInt32(&maxInflight); m != 1 {
++		t.Errorf("%d probes ran at once in sequential mode", m)
++	}
++	for i := 1; i < len(starts); i++ {
++		if gap := starts[i].Sub(starts[i-1]); gap < interval/2 {
++			t.Errorf("probe %d started %v after the previous one, want about %v", i, gap, interval)
++		}
++	}
++	if len(o.status) != 3 {
++		t.Errorf("status has %d entries, want 3", len(o.status))
++	}
++}
+--- a/app/router/strategy_fallback_test.go
++++ b/app/router/strategy_fallback_test.go
+@@ -0,0 +1,147 @@
++package router
++
++import (
++	"context"
++	"strings"
++	"sync"
++	"testing"
++
++	"github.com/golang/protobuf/proto"
++
++	"github.com/exclavenetwork/exclave-core/v5/app/observatory"
++	"github.com/exclavenetwork/exclave-core/v5/common/serial"
++	"github.com/exclavenetwork/exclave-core/v5/features/extension"
++	"github.com/exclavenetwork/exclave-core/v5/features/outbound"
++)
++
++type fakeObservatory struct {
++	mu    sync.Mutex
++	alive map[string]bool
++}
++
++func (f *fakeObservatory) Type() interface{} { return extension.ObservatoryType() }
++func (f *fakeObservatory) Start() error      { return nil }
++func (f *fakeObservatory) Close() error      { return nil }
++
++func (f *fakeObservatory) set(tag string, alive bool) {
++	f.mu.Lock()
++	defer f.mu.Unlock()
++	f.alive[tag] = alive
++}
++
++func (f *fakeObservatory) GetObservation(context.Context) (proto.Message, error) {
++	f.mu.Lock()
++	defer f.mu.Unlock()
++	result := &observatory.ObservationResult{}
++	for tag, alive := range f.alive {
++		result.Status = append(result.Status, &observatory.OutboundStatus{OutboundTag: tag, Alive: alive})
++	}
++	return result, nil
++}
++
++// fakeManager selects from a fixed, already ordered list of tags.
++type fakeManager struct {
++	outbound.Manager
++	tags []string
++}
++
++func (m *fakeManager) Select(selectors []string) []string {
++	var out []string
++	for _, tag := range m.tags {
++		for _, s := range selectors {
++			if strings.HasPrefix(tag, s) {
++				out = append(out, tag)
++				break
++			}
++		}
++	}
++	return out
++}
++
++func TestFallbackStrategyPicksFirstAliveInOrder(t *testing.T) {
++	obs := &fakeObservatory{alive: map[string]bool{"a": true, "b": true, "c": true}}
++	s := &FallbackStrategy{observatory: obs, config: &StrategyFallbackConfig{}}
++
++	cases := []struct {
++		dead []string
++		want string
++	}{
++		{nil, "a"},
++		{[]string{"a"}, "b"},
++		{[]string{"a", "b"}, "c"},
++		{[]string{"a", "b", "c"}, ""},
++	}
++	for _, c := range cases {
++		for _, tag := range []string{"a", "b", "c"} {
++			obs.set(tag, true)
++		}
++		for _, tag := range c.dead {
++			obs.set(tag, false)
++		}
++		if got := s.PickOutbound([]string{"a", "b", "c"}); got != c.want {
++			t.Errorf("dead=%v: PickOutbound() = %q, want %q", c.dead, got, c.want)
++		}
++	}
++	// an outbound the observatory has not reported yet is not considered alive
++	obs.set("b", true)
++	if got := s.PickOutbound([]string{"unknown", "b"}); got != "b" {
++		t.Errorf("PickOutbound() = %q, want b", got)
++	}
++}
++
++func TestFallbackBalancerUsesFallbackTag(t *testing.T) {
++	rule := &BalancingRule{
++		Tag:              "balancer",
++		OutboundSelector: []string{"primary"},
++		Strategy:         "fallback",
++		StrategySettings: serial.ToTypedMessage(&StrategyFallbackConfig{ObserverTag: "observer"}),
++		FallbackTag:      "backup",
++	}
++	ohm := &fakeManager{tags: []string{"primary-1", "primary-2", "backup"}}
++	b, err := rule.Build(ohm, nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if b.fallbackTag != "backup" {
++		t.Fatalf("fallbackTag = %q, want backup", b.fallbackTag)
++	}
++	obs := &fakeObservatory{alive: map[string]bool{"primary-1": false, "primary-2": true, "backup": true}}
++	b.strategy.(*FallbackStrategy).observatory = obs
++
++	if tag, err := b.PickOutbound(); err != nil || tag != "primary-2" {
++		t.Fatalf("PickOutbound() = %q, %v; want primary-2", tag, err)
++	}
++	obs.set("primary-2", false)
++	// every selected outbound is dead: the balancer must use fallbackTag, not candidates[0]
++	if tag, err := b.PickOutbound(); err != nil || tag != "backup" {
++		t.Fatalf("PickOutbound() = %q, %v; want backup", tag, err)
++	}
++	obs.set("primary-1", true)
++	if tag, err := b.PickOutbound(); err != nil || tag != "primary-1" {
++		t.Fatalf("PickOutbound() = %q, %v; want primary-1", tag, err)
++	}
++}
++
++func TestFallbackTagWiredForEveryStrategy(t *testing.T) {
++	settings := map[string]proto.Message{
++		"fallback":  &StrategyFallbackConfig{},
++		"leastping": &StrategyLeastPingConfig{},
++		"leastload": &StrategyLeastLoadConfig{},
++		"random":    &StrategyRandomConfig{},
++	}
++	for strategy, s := range settings {
++		rule := &BalancingRule{
++			OutboundSelector: []string{"p"},
++			Strategy:         strategy,
++			StrategySettings: serial.ToTypedMessage(s),
++			FallbackTag:      "backup",
++		}
++		b, err := rule.Build(&fakeManager{}, nil)
++		if err != nil {
++			t.Fatalf("%s: %v", strategy, err)
++		}
++		if b.fallbackTag != "backup" {
++			t.Errorf("%s: fallbackTag = %q, want backup", strategy, b.fallbackTag)
++		}
++	}
++}
+--- a/app/proxyman/outbound/select_order_test.go
++++ b/app/proxyman/outbound/select_order_test.go
+@@ -0,0 +1,40 @@
++package outbound_test
++
++import (
++	"context"
++	"reflect"
++	"testing"
++
++	. "github.com/exclavenetwork/exclave-core/v5/app/proxyman/outbound"
++	"github.com/exclavenetwork/exclave-core/v5/transport"
++)
++
++type taggedHandler string
++
++func (h taggedHandler) Start() error                              { return nil }
++func (h taggedHandler) Close() error                              { return nil }
++func (h taggedHandler) Tag() string                               { return string(h) }
++func (h taggedHandler) Dispatch(context.Context, *transport.Link) {}
++
++func TestSelectOrdersBySelectorThenTag(t *testing.T) {
++	m, err := New(context.Background(), nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	for _, tag := range []string{"proxy-b", "backup", "proxy-a", "direct", "proxy-c", "backup-2"} {
++		if err := m.AddHandler(context.Background(), taggedHandler(tag)); err != nil {
++			t.Fatal(err)
++		}
++	}
++	want := []string{"backup", "backup-2", "proxy-a", "proxy-b", "proxy-c"}
++	// selector order wins over tag order; within one selector the tags are sorted
++	for i := 0; i < 50; i++ { // map iteration order is randomised, so repeat
++		if got := m.Select([]string{"backup", "proxy"}); !reflect.DeepEqual(got, want) {
++			t.Fatalf("Select() = %v, want %v", got, want)
++		}
++	}
++	// a tag matching several selectors is ranked by the first one and listed once
++	if got := m.Select([]string{"proxy-c", "proxy"}); !reflect.DeepEqual(got, []string{"proxy-c", "proxy-a", "proxy-b"}) {
++		t.Fatalf("Select() = %v", got)
++	}
++}
